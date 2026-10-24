@@ -1,1156 +1,1892 @@
-#!/usr/bin/env python3
-from random import choice
-from pyrogram.handlers import MessageHandler, CallbackQueryHandler
-from pyrogram.filters import command, regex, create
-from pyrogram.enums import ChatType
+from asyncio import (
+    gather,
+    sleep,
+)
+from ast import literal_eval
+from pyrogram import raw
+from pyrogram.enums import ButtonStyle
+from pyrogram.types import (
+    InputRichBlockDetails,
+    InputRichBlockDivider,
+    InputRichBlockFooter,
+    InputRichBlockList,
+    InputRichBlockListItem,
+    InputRichBlockParagraph,
+    InputRichBlockSectionHeading,
+    InputRichBlockTable,
+    InputRichBlockTableCell,
+    InputRichMessage,
+)
 from functools import partial
-from collections import OrderedDict
-from asyncio import create_subprocess_exec, create_subprocess_shell, sleep
-from aiofiles.os import remove, rename, path as aiopath
-from aiofiles import open as aiopen
-from os import environ, getcwd
-from dotenv import load_dotenv
-from time import time
 from io import BytesIO
-from aioshutil import rmtree as aiormtree
+from os import getcwd, getenv
+from shlex import quote as shlex_quote
+from time import time
 
-from bot import config_dict, user_data, DATABASE_URL, MAX_SPLIT_SIZE, DRIVES_IDS, DRIVES_NAMES, INDEX_URLS, aria2, GLOBAL_EXTENSION_FILTER, status_reply_dict_lock, Interval, aria2_options, aria2c_global, IS_PREMIUM_USER, download_dict, qbit_options, get_client, LOGGER, bot, extra_buttons, shorteneres_list
-from bot.helper.telegram_helper.message_utils import sendMessage, sendFile, editMessage, update_all_messages
-from bot.helper.telegram_helper.filters import CustomFilters
-from bot.helper.telegram_helper.bot_commands import BotCommands
-from bot.helper.telegram_helper.button_build import ButtonMaker
-from bot.helper.ext_utils.bot_utils import setInterval, sync_to_async, new_thread
-from bot.helper.ext_utils.db_handler import DbManger
-from bot.helper.ext_utils.task_manager import start_from_queued
-from bot.helper.ext_utils.help_messages import default_desp
-from bot.helper.mirror_utils.rclone_utils.serve import rclone_serve_booter
-from bot.modules.torrent_search import initiate_search_tools
-from bot.modules.rss import addJob
+from aiofiles import open as aiopen
+from aiofiles.os import path as aiopath
+from aiofiles.os import remove, rename
+from aioshutil import rmtree
+from pyrogram.filters import create
+from pyrogram.handlers import MessageHandler
 
-START = 0
-STATE = 'view'
+from .. import (
+    LOGGER,
+    aria2_options,
+    bot_loop,
+    categories_dict,
+    drives_ids,
+    drives_names,
+    index_urls,
+    intervals,
+    jd_listener_lock,
+    nzb_options,
+    qbit_options,
+    sabnzbd_client,
+    scheduler,
+    task_dict,
+    shortener_dict,
+    excluded_extensions,
+    auth_chats,
+    sudo_users,
+    var_list,
+)
+from ..helper.ext_utils.bot_utils import (
+    SetInterval,
+    cmd_exec,
+    new_task,
+    parse_dest,
+)
+from ..core.config_manager import Config, DEFAULT_CONFIG
+from ..core.tg_client import TgClient, db_partition_id
+from ..core.torrent_manager import TorrentManager
+from ..core.startup import update_qb_options, update_nzb_options, update_variables
+from ..helper.ext_utils.db_handler import database
+from ..core.jdownloader_booter import jdownloader
+from ..helper.ext_utils.task_manager import start_from_queued
+from ..helper.mirror_leech_utils.rclone_utils.serve import rclone_serve_booter
+from ..helper.telegram_helper.button_build import ButtonMaker
+from ..helper.telegram_helper.bot_commands import BotCommands
+from ..helper.telegram_helper.tg_utils import verify_dump_access
+from ..helper.telegram_helper.message_utils import (
+    delete_message,
+    edit_message,
+    send_file,
+    send_message,
+    update_status_message,
+)
+from .rss import add_job
+from .search import initiate_search_tools
+
+start = 0
+state = "view"
 handler_dict = {}
-default_values = {'AUTO_DELETE_MESSAGE_DURATION': 30,
-                  'DEFAULT_UPLOAD': 'gd',
-                  'DOWNLOAD_DIR': '/usr/src/app/downloads/',
-                  'LEECH_SPLIT_SIZE': MAX_SPLIT_SIZE,
-                  'RSS_DELAY': 900,
-                  'STATUS_UPDATE_INTERVAL': 10,
-                  'SEARCH_LIMIT': 0,
-                  'UPSTREAM_BRANCH': 'master',
-                  'BOT_THEME': 'minimal',
-                  'BOT_LANG': 'en',
-                  'IMG_PAGE': 1,
-                  'AUTHOR_NAME': 'WZML-X',
-                  'AUTHOR_URL': 'https://t.me/WZML_X',
-                  'TITLE_NAME': 'WeebZone-X',
-                  'GD_INFO': 'Uploaded by WZML-X',
-                  }
-bool_vars = ['AS_DOCUMENT', 'BOT_PM', 'STOP_DUPLICATE', 'SET_COMMANDS', 'SAVE_MSG', 'SHOW_MEDIAINFO',
-             'IS_TEAM_DRIVE', 'USE_SERVICE_ACCOUNTS', 'WEB_PINCODE', 'EQUAL_SPLITS', 'DISABLE_DRIVE_LINK']
-
-
-async def load_config():
-
-    BOT_TOKEN = environ.get('BOT_TOKEN', '')
-    if len(BOT_TOKEN) == 0:
-        BOT_TOKEN = config_dict['BOT_TOKEN']
-
-    TELEGRAM_API = environ.get('TELEGRAM_API', '')
-    if len(TELEGRAM_API) == 0:
-        TELEGRAM_API = config_dict['TELEGRAM_API']
-    else:
-        TELEGRAM_API = int(TELEGRAM_API)
-
-    TELEGRAM_HASH = environ.get('TELEGRAM_HASH', '')
-    if len(TELEGRAM_HASH) == 0:
-        TELEGRAM_HASH = config_dict['TELEGRAM_HASH']
-
-    OWNER_ID = environ.get('OWNER_ID', '')
-    OWNER_ID = config_dict['OWNER_ID'] if len(OWNER_ID) == 0 else int(OWNER_ID)
-
-    DATABASE_URL = environ.get('DATABASE_URL', '')
-    if len(DATABASE_URL) == 0:
-        DATABASE_URL = ''
-
-    DOWNLOAD_DIR = environ.get('DOWNLOAD_DIR', '')
-    if len(DOWNLOAD_DIR) == 0:
-        DOWNLOAD_DIR = '/usr/src/app/downloads/'
-    elif not DOWNLOAD_DIR.endswith("/"):
-        DOWNLOAD_DIR = f'{DOWNLOAD_DIR}/'
-
-    GDRIVE_ID = environ.get('GDRIVE_ID', '')
-    if len(GDRIVE_ID) == 0:
-        GDRIVE_ID = ''
-
-    RCLONE_PATH = environ.get('RCLONE_PATH', '')
-    if len(RCLONE_PATH) == 0:
-        RCLONE_PATH = ''
-
-    DEFAULT_UPLOAD = environ.get('DEFAULT_UPLOAD', '')
-    if DEFAULT_UPLOAD != 'rc' and DEFAULT_UPLOAD != 'ddl':
-        DEFAULT_UPLOAD = 'gd'
-
-    RCLONE_FLAGS = environ.get('RCLONE_FLAGS', '')
-    if len(RCLONE_FLAGS) == 0:
-        RCLONE_FLAGS = ''
-
-    AUTHORIZED_CHATS = environ.get('AUTHORIZED_CHATS', '')
-    if len(AUTHORIZED_CHATS) != 0:
-        aid = AUTHORIZED_CHATS.split()
-        for id_ in aid:
-            user_data[int(id_.strip())] = {'is_auth': True}
-
-    SUDO_USERS = environ.get('SUDO_USERS', '')
-    if len(SUDO_USERS) != 0:
-        aid = SUDO_USERS.split()
-        for id_ in aid:
-            user_data[int(id_.strip())] = {'is_sudo': True}
-
-    EXTENSION_FILTER = environ.get('EXTENSION_FILTER', '')
-    if len(EXTENSION_FILTER) > 0:
-        fx = EXTENSION_FILTER.split()
-        GLOBAL_EXTENSION_FILTER.clear()
-        GLOBAL_EXTENSION_FILTER.append('aria2')
-        for x in fx:
-            if x.strip().startswith('.'):
-                x = x.lstrip('.')
-            GLOBAL_EXTENSION_FILTER.append(x.strip().lower())
-
-    MEGA_EMAIL = environ.get('MEGA_EMAIL', '')
-    MEGA_PASSWORD = environ.get('MEGA_PASSWORD', '')
-    if len(MEGA_EMAIL) == 0 or len(MEGA_PASSWORD) == 0:
-        MEGA_EMAIL = ''
-        MEGA_PASSWORD = ''
-
-    UPTOBOX_TOKEN = environ.get('UPTOBOX_TOKEN', '')
-    if len(UPTOBOX_TOKEN) == 0:
-        UPTOBOX_TOKEN = ''
-
-    INDEX_URL = environ.get('INDEX_URL', '').rstrip("/")
-    if len(INDEX_URL) == 0:
-        INDEX_URL = ''
-
-    SEARCH_API_LINK = environ.get('SEARCH_API_LINK', '').rstrip("/")
-    if len(SEARCH_API_LINK) == 0:
-        SEARCH_API_LINK = ''
-
-    CAP_FONT = environ.get('CAP_FONT', '').lower()
-    if CAP_FONT.strip() not in ['', 'b', 'i', 'u', 's', 'spoiler', 'code']:
-        CAP_FONT = 'code'
-        
-    LEECH_FILENAME_PREFIX = environ.get('LEECH_FILENAME_PREFIX', '')
-    if len(LEECH_FILENAME_PREFIX) == 0:
-        LEECH_FILENAME_PREFIX = ''
-
-    LEECH_FILENAME_SUFFIX = environ.get('LEECH_FILENAME_SUFFIX', '')
-    if len(LEECH_FILENAME_SUFFIX) == 0:
-        LEECH_FILENAME_SUFFIX = ''
-
-    LEECH_FILENAME_CAPTION = environ.get('LEECH_FILENAME_CAPTION', '')
-    if len(LEECH_FILENAME_CAPTION) == 0:
-        LEECH_FILENAME_CAPTION = ''
-
-    LEECH_FILENAME_REMNAME = environ.get('LEECH_FILENAME_REMNAME', '')
-    if len(LEECH_FILENAME_REMNAME) == 0:
-        LEECH_FILENAME_REMNAME = ''
-
-    SEARCH_PLUGINS = environ.get('SEARCH_PLUGINS', '')
-    if len(SEARCH_PLUGINS) == 0:
-        SEARCH_PLUGINS = ''
-
-    MAX_SPLIT_SIZE = 4194304000 if IS_PREMIUM_USER else 2097152000
-
-    LEECH_SPLIT_SIZE = environ.get('LEECH_SPLIT_SIZE', '')
-    if len(LEECH_SPLIT_SIZE) == 0 or int(LEECH_SPLIT_SIZE) > MAX_SPLIT_SIZE:
-        LEECH_SPLIT_SIZE = MAX_SPLIT_SIZE
-    else:
-        LEECH_SPLIT_SIZE = int(LEECH_SPLIT_SIZE)
-
-    STATUS_UPDATE_INTERVAL = environ.get('STATUS_UPDATE_INTERVAL', '')
-    if len(STATUS_UPDATE_INTERVAL) == 0:
-        STATUS_UPDATE_INTERVAL = 10
-    else:
-        STATUS_UPDATE_INTERVAL = int(STATUS_UPDATE_INTERVAL)
-    if len(download_dict) != 0:
-        async with status_reply_dict_lock:
-            if Interval:
-                Interval[0].cancel()
-                Interval.clear()
-                Interval.append(setInterval(STATUS_UPDATE_INTERVAL, update_all_messages))
-
-    AUTO_DELETE_MESSAGE_DURATION = environ.get(
-        'AUTO_DELETE_MESSAGE_DURATION', '')
-    if len(AUTO_DELETE_MESSAGE_DURATION) == 0:
-        AUTO_DELETE_MESSAGE_DURATION = 30
-    else:
-        AUTO_DELETE_MESSAGE_DURATION = int(AUTO_DELETE_MESSAGE_DURATION)
-
-    YT_DLP_OPTIONS = environ.get('YT_DLP_OPTIONS', '')
-    if len(YT_DLP_OPTIONS) == 0:
-        YT_DLP_OPTIONS = ''
-
-    SEARCH_LIMIT = environ.get('SEARCH_LIMIT', '')
-    SEARCH_LIMIT = 0 if len(SEARCH_LIMIT) == 0 else int(SEARCH_LIMIT)
-
-    LEECH_LOG_ID = environ.get('LEECH_LOG_ID', '')
-    LEECH_LOG_ID = '' if len(LEECH_LOG_ID) == 0 else int(LEECH_LOG_ID)
-
-    STATUS_LIMIT = environ.get('STATUS_LIMIT', '')
-    STATUS_LIMIT = 10 if len(STATUS_LIMIT) == 0 else int(STATUS_LIMIT)
-
-    RSS_CHAT_ID = environ.get('RSS_CHAT_ID', '')
-    RSS_CHAT_ID = '' if len(RSS_CHAT_ID) == 0 else int(RSS_CHAT_ID)
-
-    RSS_DELAY = environ.get('RSS_DELAY', '')
-    RSS_DELAY = 900 if len(RSS_DELAY) == 0 else int(RSS_DELAY)
-
-    CMD_SUFFIX = environ.get('CMD_SUFFIX', '')
-
-    USER_SESSION_STRING = environ.get('USER_SESSION_STRING', '')
-
-    TORRENT_TIMEOUT = environ.get('TORRENT_TIMEOUT', '')
-    downloads = aria2.get_downloads()
-    if len(TORRENT_TIMEOUT) == 0:
-        for download in downloads:
-            if not download.is_complete:
-                try:
-                    await sync_to_async(aria2.client.change_option, download.gid, {'bt-stop-timeout': '0'})
-                except Exception as e:
-                    LOGGER.error(e)
-        aria2_options['bt-stop-timeout'] = '0'
-        if DATABASE_URL:
-            await DbManger().update_aria2('bt-stop-timeout', '0')
-        TORRENT_TIMEOUT = ''
-    else:
-        for download in downloads:
-            if not download.is_complete:
-                try:
-                    await sync_to_async(aria2.client.change_option, download.gid, {'bt-stop-timeout': TORRENT_TIMEOUT})
-                except Exception as e:
-                    LOGGER.error(e)
-        aria2_options['bt-stop-timeout'] = TORRENT_TIMEOUT
-        if DATABASE_URL:
-            await DbManger().update_aria2('bt-stop-timeout', TORRENT_TIMEOUT)
-        TORRENT_TIMEOUT = int(TORRENT_TIMEOUT)
-
-    QUEUE_ALL = environ.get('QUEUE_ALL', '')
-    QUEUE_ALL = '' if len(QUEUE_ALL) == 0 else int(QUEUE_ALL)
-
-    QUEUE_DOWNLOAD = environ.get('QUEUE_DOWNLOAD', '')
-    QUEUE_DOWNLOAD = '' if len(QUEUE_DOWNLOAD) == 0 else int(QUEUE_DOWNLOAD)
-
-    QUEUE_UPLOAD = environ.get('QUEUE_UPLOAD', '')
-    QUEUE_UPLOAD = '' if len(QUEUE_UPLOAD) == 0 else int(QUEUE_UPLOAD)
-
-    INCOMPLETE_TASK_NOTIFIER = environ.get('INCOMPLETE_TASK_NOTIFIER', '')
-    INCOMPLETE_TASK_NOTIFIER = INCOMPLETE_TASK_NOTIFIER.lower() == 'true'
-    if not INCOMPLETE_TASK_NOTIFIER and DATABASE_URL:
-        await DbManger().trunc_table('tasks')
-
-    STOP_DUPLICATE = environ.get('STOP_DUPLICATE', '')
-    STOP_DUPLICATE = STOP_DUPLICATE.lower() == 'true'
-
-    IS_TEAM_DRIVE = environ.get('IS_TEAM_DRIVE', '')
-    IS_TEAM_DRIVE = IS_TEAM_DRIVE.lower() == 'true'
-
-    USE_SERVICE_ACCOUNTS = environ.get('USE_SERVICE_ACCOUNTS', '')
-    USE_SERVICE_ACCOUNTS = USE_SERVICE_ACCOUNTS.lower() == 'true'
-
-    WEB_PINCODE = environ.get('WEB_PINCODE', '')
-    WEB_PINCODE = WEB_PINCODE.lower() == 'true'
-
-    AS_DOCUMENT = environ.get('AS_DOCUMENT', '')
-    AS_DOCUMENT = AS_DOCUMENT.lower() == 'true'
-
-    SHOW_MEDIAINFO = environ.get('SHOW_MEDIAINFO', '')
-    SHOW_MEDIAINFO = SHOW_MEDIAINFO.lower() == 'true'
-
-    EQUAL_SPLITS = environ.get('EQUAL_SPLITS', '')
-    EQUAL_SPLITS = EQUAL_SPLITS.lower() == 'true'
-
-    MEDIA_GROUP = environ.get('MEDIA_GROUP', '')
-    MEDIA_GROUP = MEDIA_GROUP.lower() == 'true'
-
-    BASE_URL_PORT = environ.get('BASE_URL_PORT', '')
-    BASE_URL_PORT = 80 if len(BASE_URL_PORT) == 0 else int(BASE_URL_PORT)
-
-    RCLONE_SERVE_URL = environ.get('RCLONE_SERVE_URL', '')
-    if len(RCLONE_SERVE_URL) == 0:
-        RCLONE_SERVE_URL = ''
-
-    RCLONE_SERVE_PORT = environ.get('RCLONE_SERVE_PORT', '')
-    RCLONE_SERVE_PORT = 8080 if len(
-        RCLONE_SERVE_PORT) == 0 else int(RCLONE_SERVE_PORT)
-
-    RCLONE_SERVE_USER = environ.get('RCLONE_SERVE_USER', '')
-    if len(RCLONE_SERVE_USER) == 0:
-        RCLONE_SERVE_USER = ''
-
-    RCLONE_SERVE_PASS = environ.get('RCLONE_SERVE_PASS', '')
-    if len(RCLONE_SERVE_PASS) == 0:
-        RCLONE_SERVE_PASS = ''
-
-    await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
-    BASE_URL = environ.get('BASE_URL', '').rstrip("/")
-    if len(BASE_URL) == 0:
-        BASE_URL = ''
-    else:
-        await create_subprocess_shell(f"gunicorn web.wserver:app --bind 0.0.0.0:{BASE_URL_PORT} --worker-class gevent")
-
-    UPSTREAM_REPO = environ.get('UPSTREAM_REPO', '')
-    if len(UPSTREAM_REPO) == 0:
-        UPSTREAM_REPO = ''
-
-    UPSTREAM_BRANCH = environ.get('UPSTREAM_BRANCH', '')
-    if len(UPSTREAM_BRANCH) == 0:
-        UPSTREAM_BRANCH = 'master'
-
-    STORAGE_THRESHOLD = environ.get('STORAGE_THRESHOLD', '')
-    STORAGE_THRESHOLD = '' if len(
-        STORAGE_THRESHOLD) == 0 else float(STORAGE_THRESHOLD)
-
-    TORRENT_LIMIT = environ.get('TORRENT_LIMIT', '')
-    TORRENT_LIMIT = '' if len(TORRENT_LIMIT) == 0 else float(TORRENT_LIMIT)
-
-    DIRECT_LIMIT = environ.get('DIRECT_LIMIT', '')
-    DIRECT_LIMIT = '' if len(DIRECT_LIMIT) == 0 else float(DIRECT_LIMIT)
-
-    YTDLP_LIMIT = environ.get('YTDLP_LIMIT', '')
-    YTDLP_LIMIT = '' if len(YTDLP_LIMIT) == 0 else float(YTDLP_LIMIT)
-
-    GDRIVE_LIMIT = environ.get('GDRIVE_LIMIT', '')
-    GDRIVE_LIMIT = '' if len(GDRIVE_LIMIT) == 0 else float(GDRIVE_LIMIT)
-
-    CLONE_LIMIT = environ.get('CLONE_LIMIT', '')
-    CLONE_LIMIT = '' if len(CLONE_LIMIT) == 0 else float(CLONE_LIMIT)
-
-    MEGA_LIMIT = environ.get('MEGA_LIMIT', '')
-    MEGA_LIMIT = '' if len(MEGA_LIMIT) == 0 else float(MEGA_LIMIT)
-
-    LEECH_LIMIT = environ.get('LEECH_LIMIT', '')
-    LEECH_LIMIT = '' if len(LEECH_LIMIT) == 0 else float(LEECH_LIMIT)
-
-    FSUB_IDS = environ.get('FSUB_IDS', '')
-    if len(FSUB_IDS) == 0:
-        FSUB_IDS = ''
-
-    MIRROR_LOG_ID = environ.get('MIRROR_LOG_ID', '')
-    if len(MIRROR_LOG_ID) == 0:
-        MIRROR_LOG_ID = ''
-
-    USER_MAX_TASKS = environ.get('USER_MAX_TASKS', '')
-    USER_MAX_TASKS = '' if len(USER_MAX_TASKS) == 0 else int(USER_MAX_TASKS)
-
-    PLAYLIST_LIMIT = environ.get('PLAYLIST_LIMIT', '')
-    PLAYLIST_LIMIT = '' if len(PLAYLIST_LIMIT) == 0 else int(PLAYLIST_LIMIT)
-
-    BOT_PM = environ.get('BOT_PM', '')
-    BOT_PM = BOT_PM.lower() == 'true'
-
-    DAILY_TASK_LIMIT = environ.get('DAILY_TASK_LIMIT', '')
-    DAILY_TASK_LIMIT = '' if len(
-        DAILY_TASK_LIMIT) == 0 else int(DAILY_TASK_LIMIT)
-
-    DAILY_MIRROR_LIMIT = environ.get('DAILY_MIRROR_LIMIT', '')
-    DAILY_MIRROR_LIMIT = '' if len(
-        DAILY_MIRROR_LIMIT) == 0 else float(DAILY_MIRROR_LIMIT)
-
-    DAILY_LEECH_LIMIT = environ.get('DAILY_LEECH_LIMIT', '')
-    DAILY_LEECH_LIMIT = '' if len(
-        DAILY_LEECH_LIMIT) == 0 else float(DAILY_LEECH_LIMIT)
-
-    DISABLE_DRIVE_LINK = environ.get('DISABLE_DRIVE_LINK', '')
-    DISABLE_DRIVE_LINK = DISABLE_DRIVE_LINK.lower() == 'true'
-
-    BOT_THEME = environ.get('BOT_THEME', '')
-    if len(BOT_THEME) == 0:
-        BOT_THEME = 'minimal'
-
-    IMG_SEARCH = environ.get('IMG_SEARCH', '')
-    IMG_SEARCH = (IMG_SEARCH.replace("'", '').replace('"', '').replace(
-        '[', '').replace(']', '').replace(",", "")).split()
-
-    IMG_PAGE = environ.get('IMG_PAGE', '')
-    IMG_PAGE = 1 if not IMG_PAGE else int(IMG_PAGE)
-
-    IMAGES = environ.get('IMAGES', '')
-    IMAGES = (IMAGES.replace("'", '').replace('"', '').replace(
-        '[', '').replace(']', '').replace(",", "")).split()
-
-    AUTHOR_NAME = environ.get('AUTHOR_NAME', '')
-    if len(AUTHOR_NAME) == 0:
-        AUTHOR_NAME = 'WZML-X'
-
-    AUTHOR_URL = environ.get('AUTHOR_URL', '')
-    if len(AUTHOR_URL) == 0:
-        AUTHOR_URL = 'https://t.me/WZML_X'
-
-    TITLE_NAME = environ.get('TITLE_NAME', '')
-    if len(TITLE_NAME) == 0:
-        TITLE_NAME = 'WeebZone-X'
-
-    GD_INFO = environ.get('GD_INFO', '')
-    if len(GD_INFO) == 0:
-        GD_INFO = 'Uploaded by WZML-X'
-
-    SAVE_MSG = environ.get('SAVE_MSG', '')
-    SAVE_MSG = SAVE_MSG.lower() == 'true'
-
-    SET_COMMANDS = environ.get('SET_COMMANDS', '')
-    SET_COMMANDS = SET_COMMANDS.lower() == 'true'
-    
-    TOKEN_TIMEOUT = environ.get('TOKEN_TIMEOUT', '')
-    TOKEN_TIMEOUT = int(TOKEN_TIMEOUT) if TOKEN_TIMEOUT.isdigit() else ''
-
-    LOGIN_PASS = environ.get('LOGIN_PASS', '')
-    if len(LOGIN_PASS) == 0:
-        LOGIN_PASS = None
-
-    DEF_IMDB_TEMP  = environ.get('IMDB_TEMPLATE', '')
-    if len(DEF_IMDB_TEMP) == 0:
-        DEF_IMDB_TEMP = '''<b>Title: </b> {title} [{year}]
-<b>Also Known As:</b> {aka}
-<b>Rating ⭐️:</b> <i>{rating}</i>
-<b>Release Info: </b> <a href="{url_releaseinfo}">{release_date}</a>
-<b>Genre: </b>{genres}
-<b>IMDb URL:</b> {url}
-<b>Language: </b>{languages}
-<b>Country of Origin : </b> {countries}
-
-<b>Story Line: </b><code>{plot}</code>
-
-<a href="{url_cast}">Read More ...</a>'''
-
-    DEF_ANI_TEMP  = environ.get('ANIME_TEMPLATE', '')
-    if len(DEF_ANI_TEMP) == 0:
-        DEF_ANI_TEMP = '''<b>{ro_title}</b>({na_title})
-<b>Format</b>: <code>{format}</code>
-<b>Status</b>: <code>{status}</code>
-<b>Start Date</b>: <code>{startdate}</code>
-<b>End Date</b>: <code>{enddate}</code>
-<b>Season</b>: <code>{season}</code>
-<b>Country</b>: {country}
-<b>Episodes</b>: <code>{episodes}</code>
-<b>Duration</b>: <code>{duration}</code>
-<b>Average Score</b>: <code>{avgscore}</code>
-<b>Genres</b>: {genres}
-<b>Hashtag</b>: {hashtag}
-<b>Studios</b>: {studios}
-
-<b>Description</b>: <i>{description}</i>'''
-
-    MDL_TEMPLATE = environ.get('MDL_TEMPLATE', '')
-    if len(MDL_TEMPLATE) == 0:
-        MDL_TEMPLATE = '''<b>Title:</b> {title}
-<b>Also Known As:</b> {aka}
-<b>Rating ⭐️:</b> <i>{rating}</i>
-<b>Release Info:</b> {aired_date}
-<b>Genre:</b> {genres}
-<b>MyDramaList URL:</b> {url}
-<b>Language:</b> #Korean
-<b>Country of Origin:</b> {country}
-
-<b>Story Line:</b> {synopsis}
-
-<a href='{url}'>Read More ...</a>'''
-    
-    TIMEZONE = environ.get('TIMEZONE', '')
-    if len(TIMEZONE) == 0:
-        TIMEZONE = 'Asia/Kolkata'
-        
-    DRIVES_IDS.clear()
-    DRIVES_NAMES.clear()
-    INDEX_URLS.clear()
-
-    if GDRIVE_ID:
-        DRIVES_NAMES.append("Main")
-        DRIVES_IDS.append(GDRIVE_ID)
-        INDEX_URLS.append(INDEX_URL)
-
-    if await aiopath.exists('list_drives.txt'):
-        async with aiopen('list_drives.txt', 'r+') as f:
-            lines = await f.readlines()
-            for line in lines:
-                temp = line.strip().split()
-                DRIVES_IDS.append(temp[1])
-                DRIVES_NAMES.append(temp[0].replace("_", " "))
-                if len(temp) > 2:
-                    INDEX_URLS.append(temp[2])
-                else:
-                    INDEX_URLS.append('')
-
-    extra_buttons.clear()
-    if await aiopath.exists('buttons.txt'):
-        async with aiopen('buttons.txt', 'r+') as f:
-            lines = await f.readlines()
-            for line in lines:
-                temp = line.strip().split()
-                if len(extra_buttons.keys()) == 4:
-                    break
-                if len(temp) == 2:
-                    extra_buttons[temp[0].replace("_", " ")] = temp[1]
-
-    shorteneres_list.clear()
-    if await aiopath.exists('shorteners.txt'):
-        async with aiopen('shorteners.txt', 'r+') as f:
-            lines = await f.readlines()
-            for line in lines:
-                temp = line.strip().split()
-                if len(temp) == 2:
-                    shorteneres_list.append({'domain': temp[0],'api_key': temp[1]})
-
-    config_dict.update({'ANIME_TEMPLATE': DEF_ANI_TEMP,
-                        'AS_DOCUMENT': AS_DOCUMENT,
-                        'AUTHORIZED_CHATS': AUTHORIZED_CHATS,
-                        'AUTO_DELETE_MESSAGE_DURATION': AUTO_DELETE_MESSAGE_DURATION,
-                        'BASE_URL': BASE_URL,
-                        'BASE_URL_PORT': BASE_URL_PORT,
-                        'BOT_TOKEN': BOT_TOKEN,
-                        'CAP_FONT': CAP_FONT,
-                        'CMD_SUFFIX': CMD_SUFFIX,
-                        'DATABASE_URL': DATABASE_URL,
-                        'DEFAULT_UPLOAD': DEFAULT_UPLOAD,
-                        'DOWNLOAD_DIR': DOWNLOAD_DIR,
-                        'STORAGE_THRESHOLD': STORAGE_THRESHOLD,
-                        'TORRENT_LIMIT': TORRENT_LIMIT,
-                        'DIRECT_LIMIT': DIRECT_LIMIT,
-                        'YTDLP_LIMIT': YTDLP_LIMIT,
-                        'GDRIVE_LIMIT': GDRIVE_LIMIT,
-                        'CLONE_LIMIT': CLONE_LIMIT,
-                        'MEGA_LIMIT': MEGA_LIMIT,
-                        'LEECH_LIMIT': LEECH_LIMIT,
-                        'FSUB_IDS': FSUB_IDS,
-                        'USER_MAX_TASKS': USER_MAX_TASKS,
-                        'PLAYLIST_LIMIT': PLAYLIST_LIMIT,
-                        'DAILY_TASK_LIMIT': DAILY_TASK_LIMIT,
-                        'DAILY_MIRROR_LIMIT': DAILY_MIRROR_LIMIT,
-                        'DAILY_LEECH_LIMIT': DAILY_LEECH_LIMIT,
-                        'MIRROR_LOG_ID': MIRROR_LOG_ID,
-                        'LEECH_LOG_ID': LEECH_LOG_ID,
-                        'BOT_PM': BOT_PM,
-                        'DISABLE_DRIVE_LINK': DISABLE_DRIVE_LINK,
-                        'BOT_THEME': BOT_THEME,
-                        'IMAGES': IMAGES,
-                        'IMG_SEARCH': IMG_SEARCH,
-                        'IMG_PAGE': IMG_PAGE,
-                        'IMDB_TEMPLATE': DEF_IMDB_TEMP,
-                        'AUTHOR_NAME': AUTHOR_NAME,
-                        'AUTHOR_URL': AUTHOR_URL,
-                        'TITLE_NAME': TITLE_NAME,
-                        'GD_INFO': GD_INFO,
-                        'EQUAL_SPLITS': EQUAL_SPLITS,
-                        'EXTENSION_FILTER': EXTENSION_FILTER,
-                        'GDRIVE_ID': GDRIVE_ID,
-                        'INCOMPLETE_TASK_NOTIFIER': INCOMPLETE_TASK_NOTIFIER,
-                        'INDEX_URL': INDEX_URL,
-                        'IS_TEAM_DRIVE': IS_TEAM_DRIVE,
-                        'LEECH_FILENAME_PREFIX': LEECH_FILENAME_PREFIX,
-                        'LEECH_FILENAME_SUFFIX': LEECH_FILENAME_SUFFIX,
-                        'LEECH_FILENAME_CAPTION': LEECH_FILENAME_CAPTION,
-                        'LEECH_FILENAME_REMNAME': LEECH_FILENAME_REMNAME,
-                        'LEECH_SPLIT_SIZE': LEECH_SPLIT_SIZE,
-                        'LOGIN_PASS': LOGIN_PASS,
-                        'TOKEN_TIMEOUT': TOKEN_TIMEOUT,
-                        'MEDIA_GROUP': MEDIA_GROUP,
-                        'MEGA_EMAIL': MEGA_EMAIL,
-                        'MEGA_PASSWORD': MEGA_PASSWORD,
-                        'MDL_TEMPLATE': MDL_TEMPLATE,
-                        'OWNER_ID': OWNER_ID,
-                        'QUEUE_ALL': QUEUE_ALL,
-                        'QUEUE_DOWNLOAD': QUEUE_DOWNLOAD,
-                        'QUEUE_UPLOAD': QUEUE_UPLOAD,
-                        'RCLONE_FLAGS': RCLONE_FLAGS,
-                        'RCLONE_PATH': RCLONE_PATH,
-                        'RCLONE_SERVE_URL': RCLONE_SERVE_URL,
-                        'RCLONE_SERVE_USER': RCLONE_SERVE_USER,
-                        'RCLONE_SERVE_PASS': RCLONE_SERVE_PASS,
-                        'RCLONE_SERVE_PORT': RCLONE_SERVE_PORT,
-                        'RSS_CHAT_ID': RSS_CHAT_ID,
-                        'RSS_DELAY': RSS_DELAY,
-                        'SAVE_MSG': SAVE_MSG,
-                        'SEARCH_API_LINK': SEARCH_API_LINK,
-                        'SEARCH_LIMIT': SEARCH_LIMIT,
-                        'SEARCH_PLUGINS': SEARCH_PLUGINS,
-                        'SET_COMMANDS': SET_COMMANDS,
-                        'SHOW_MEDIAINFO': SHOW_MEDIAINFO,
-                        'STATUS_LIMIT': STATUS_LIMIT,
-                        'STATUS_UPDATE_INTERVAL': STATUS_UPDATE_INTERVAL,
-                        'STOP_DUPLICATE': STOP_DUPLICATE,
-                        'SUDO_USERS': SUDO_USERS,
-                        'TELEGRAM_API': TELEGRAM_API,
-                        'TELEGRAM_HASH': TELEGRAM_HASH,
-                        'TIMEZONE': TIMEZONE,
-                        'TORRENT_TIMEOUT': TORRENT_TIMEOUT,
-                        'UPSTREAM_REPO': UPSTREAM_REPO,
-                        'UPSTREAM_BRANCH': UPSTREAM_BRANCH,
-                        'UPTOBOX_TOKEN': UPTOBOX_TOKEN,
-                        'USER_SESSION_STRING': USER_SESSION_STRING,
-                        'USE_SERVICE_ACCOUNTS': USE_SERVICE_ACCOUNTS,
-                        'WEB_PINCODE': WEB_PINCODE,
-                        'YT_DLP_OPTIONS': YT_DLP_OPTIONS})
-
-    if DATABASE_URL:
-        await DbManger().update_config(config_dict)
-    await initiate_search_tools()
-    await start_from_queued()
-    await rclone_serve_booter()
-
-
-async def get_buttons(key=None, edit_type=None, edit_mode=None, mess=None):
+DEFAULT_VALUES = {
+    "LEECH_SPLIT_SIZE": TgClient.MAX_SPLIT_SIZE,
+    "RSS_DELAY": 600,
+    "STATUS_UPDATE_INTERVAL": 15,
+    "SEARCH_LIMIT": 0,
+    "UPSTREAM_BRANCH": "wzv3",
+    "DEFAULT_UPLOAD": "rc",
+    "BOT_MAX_TASKS": 0,
+    "QUEUE_ALL": 0,
+    "QUEUE_DOWNLOAD": 0,
+    "QUEUE_UPLOAD": 0,
+    "USER_MAX_TASKS": 0,
+}
+
+BOOL_VARS = [
+    "AS_DOCUMENT",
+    "AUTO_THUMBNAIL",
+    "BOT_PM",
+    "DELETE_LINKS",
+    "DRIVE_CATEGORY_MODE",
+    "DISABLE_BULK",
+    "DISABLE_FF_MODE",
+    "DISABLE_JD",
+    "DISABLE_LEECH",
+    "DISABLE_MIRROR",
+    "DISABLE_MULTI",
+    "DISABLE_NZB",
+    "DISABLE_SEEDR",
+    "DISABLE_RSS",
+    "DISABLE_SEARCH",
+    "DISABLE_SEED",
+    "DISABLE_STREAM",
+    "DISABLE_TORRENTS",
+    "DISABLE_YTDLP",
+    "DISABLE_MEGA",
+    "DISABLE_PLUGINS",
+    "ENABLE_TELEMETRY",
+    "EQUAL_SPLITS",
+    "GOFILE_AUTO_CREATE_FOLDER",
+    "INC_TASK_NOTIFY",
+    "INC_TASK_RESUME",
+    "IS_TEAM_DRIVE",
+    "MEDIA_GROUP",
+    "MEDIA_STORE",
+    "MEM_DEEP_STATS",
+    "SEEDR_DELETE_FOLDER",
+    "SEEDR_QBMIRROR_ENABLED",
+    "SET_COMMANDS",
+    "SHOW_CLOUD_LINK",
+    "STOP_DUPLICATE",
+    "USE_HYPER",
+    "USE_IMAGES",
+    "USE_SERVICE_ACCOUNTS",
+    "WEB_PINCODE",
+]
+
+DEFAULT_DESP = {
+    "AS_DOCUMENT": "Send files as document instead of media. Default: False.",
+    "AUTHORIZED_CHATS": "User/Chat IDs authorized to use the bot. Space-separated. Supports thread IDs with | separator.",
+    "BASE_URL": "Public URL for torrent web file selection. Format: http://ip or http://ip:port.",
+    "BOT_TOKEN": "Telegram Bot Token from @BotFather.",
+    "HELPER_TOKENS": "Additional bot tokens for parallel task handling.",
+    "HELPER_STRINGS": "Extra user session strings for parallel task handling. Space-separated.",
+    "HELPER_BOT_PROXIES": "One proxy dict per line, matching HELPER_TOKENS order. Empty line = no proxy for that bot.",
+    "HELPER_USER_PROXIES": "One proxy dict per line, matching HELPER_STRINGS order. Empty line = no proxy for that user.",
+    "STREAM_TOKENS": "Bot tokens dedicated to /stream and /dl. If set, streaming uses these and is isolated from mirror/leech load. Falls back to HELPER_TOKENS.",
+    "BOT_MAX_TASKS": "Max tasks (including queued) the bot runs in parallel. 0 = unlimited.",
+    "BOT_PM": "Send files/links to bot owner PM. Default: False.",
+    "CMD_SUFFIX": "Text appended to all bot commands. Useful for running multiple bot instances.",
+    "DEFAULT_LANG": "Default bot language code. Default: en.",
+    "DATABASE_URL": "MongoDB connection string for persistent storage.",
+    "PROWLARR_URL": "Prowlarr base URL reachable by the WZML app. Default: http://prowlarr:9696.",
+    "PROWLARR_API_KEY": "Prowlarr API key used by /nzbsearch and /nzs. Set from Prowlarr Settings > General.",
+    "DEFAULT_UPLOAD": "Default upload destination: gd (Google Drive) or rc (rclone). Default: rc.",
+    "DELETE_LINKS": "Auto-delete source links/messages on task start and remove successfully forwarded global leech staging messages. Default: False.",
+    "DEBRID_LINK_API": "Debrid-link.com API key for premium hoster support.",
+    "ALLDEBRID_API_KEY": "AllDebrid API key, used by the -ad flag to unlock links/magnets.",
+    "ALLDEBRID_NO_SEED_TIMEOUT": "Seconds a -ad magnet may stall with no seeders before aborting. 0 = no limit. Default: 180.",
+    "DISABLE_TORRENTS": "Disable all torrent downloads. Default: False.",
+    "DISABLE_LEECH": "Disable all leech (download to Telegram) tasks. Default: False.",
+    "DISABLE_MIRROR": "Disable all mirror (upload to cloud) tasks. Default: False.",
+    "DISABLE_BULK": "Disable bulk (zip/unzip) operations. Default: False.",
+    "DISABLE_MULTI": "Disable multi-part splits. Default: False.",
+    "DISABLE_SEED": "Disable seeding after torrent download. Default: False.",
+    "DISABLE_FF_MODE": "Disable FFmpeg processing mode. Default: False.",
+    "DISABLE_MEGA": "Disable Mega Processor for bot. Default: False.",
+    "DISABLE_PLUGINS": "Disable the plugin system. Unloads every plugin and stops loading them at boot. Default: False.",
+    "DISABLE_JD": "Disable JDownloader downloads. Saves ~256-500MB RAM. Default: False.",
+    "DISABLE_NZB": "Disable SABnzbd/Usenet downloads. Saves ~100-200MB RAM. Default: False.",
+    "DISABLE_SEEDR": "Disable Seedr downloads. Default: False.",
+    "DISABLE_RSS": "Disable RSS feed monitoring. Saves CPU cycles. Default: False.",
+    "DISABLE_SEARCH": "Disable torrent search plugins. Saves network I/O. Default: False.",
+    "DISABLE_STREAM": "Disable streaming. Stops /stream and the stream server. Default: False.",
+    "DISABLE_YTDLP": "Disable YouTube/YT-DLP downloads. Default: False.",
+    "EQUAL_SPLITS": "Split files into equal parts of LEECH_SPLIT_SIZE. Default: False.",
+    "EXCLUDED_EXTENSIONS": "File extensions to exclude from upload/clone. Space-separated.",
+    "FFMPEG_CMDS": "Custom FFmpeg command presets. Dict format.",
+    "FILELION_API": "FileLion.cc API key for direct download support.",
+    "MEDIA_STORE": "Store media metadata for re-upload. Default: True.",
+    "FORCE_SUB_IDS": "Channel/Group IDs for force subscription. Space-separated.",
+    "GOFILE_API": "Gofile.io API token for file uploads.",
+    "GOFILE_FOLDER_ID": "Gofile.io folder ID for uploads.",
+    "GOFILE_AUTO_CREATE_FOLDER": "With no GOFILE_FOLDER_ID, make a folder per upload instead of using the account root. Default: False.",
+    "PIXELDRAIN_KEY": "PixelDrain API key for uploads.",
+    "PROTECTED_API": "ProtectedFiles.cc API key.",
+    "BUZZHEAVIER_API": "BuzzHeavier API key for uploads.",
+    "DEVUPLOADS_KEY": "DevUploads API key.",
+    "DEVUPLOADS_FOLDER": "DevUploads folder ID.",
+    "VIKINGFILE_HASH": "VikingFile.to hash for uploads.",
+    "VIKINGFILE_FOLDER": "VikingFile.to folder ID.",
+    "GDRIVE_ID": "Google Drive folder/TeamDrive ID for uploads.",
+    "DRIVE_CATEGORY_MODE": "Let users set their own Drive upload categories in /usettings. Default: False.",
+    "DRIVE_CATEGORY_SA": "Email given reader access on uploads that go outside GDRIVE_ID. Empty = skip.",
+    "GD_DESP": "Description for Google Drive uploads. Default: Uploaded with WZ Bot.",
+    "AUTHOR_NAME": "Author name shown on Telegraph pages.",
+    "AUTHOR_URL": "Author URL for Telegraph pages. Use channel URL for join button.",
+    "INSTADL_API": "Instagram downloader API key.",
+    "IMDB_TEMPLATE": "Optional HTML template for IMDB results. If empty, uses Rich Messages.",
+    "IMAGES": "List of image URLs or file_ids for the gallery. Managed via /addimage command.",
+    "IMG_SEARCH": "Comma-separated keywords to auto-fetch wallpaper images on startup. e.g. anime, nature, space",
+    "IMG_PAGE": "Number of pages to search for each keyword in IMG_SEARCH. Each page has ~70 images. Default: 1",
+    "USE_IMAGES": "Enable random photo backgrounds on bot messages. Requires IMAGES list. Default: False",
+    "IMG_SOURCES": "List of image sources to fetch from. Options: wallpaperflare, peapix, wallhaven. Default: wallpaperflare",
+    "INC_TASK_NOTIFY": "Notify about incomplete tasks after restart. Default: False.",
+    "INC_TASK_RESUME": "Auto-resume incomplete tasks on restart. Default: False.",
+    "INDEX_URL": "Google Drive Index URL for direct links.",
+    "IS_TEAM_DRIVE": "Set True for TeamDrive uploads. Default: False.",
+    "JD_EMAIL": "JDownloader account email for premium downloads.",
+    "JD_PASS": "JDownloader account password.",
+    "MEGA_EMAIL": "Mega.nz account email for premium.",
+    "MEGA_PASSWORD": "Mega.nz account password.",
+    "SEEDR_EMAIL": "Seedr account email for magnet mirroring.",
+    "SEEDR_PASSWORD": "Seedr account password.",
+    "SEEDR_API_TOKEN": "Seedr personal access token for quota and task APIs.",
+    "SEEDR_QBMIRROR_ENABLED": "Try Seedr before qBittorrent for /qbmirror. Default: True.",
+    "SEEDR_FIRST_TIMEOUT": "Seconds to wait for Seedr before falling back to qBittorrent. Default: 300.",
+    "SEEDR_POLL_INTERVAL": "Seconds between Seedr task status checks. Default: 10.",
+    "SEEDR_DELETE_FOLDER": "Delete folder from Seedr after downloading locally. Default: False.",
+    "DIRECT_LIMIT": "Direct link download size limit in GB. 0 = unlimited.",
+    "MEGA_LIMIT": "Mega download size limit in GB. 0 = unlimited.",
+    "TORRENT_LIMIT": "Torrent download size limit in GB. 0 = unlimited.",
+    "GD_DL_LIMIT": "Google Drive download size limit in GB. 0 = unlimited.",
+    "RC_DL_LIMIT": "Rclone download size limit in GB. 0 = unlimited.",
+    "CLONE_LIMIT": "Google Drive clone size limit in GB. 0 = unlimited.",
+    "JD_LIMIT": "JDownloader download size limit in GB. 0 = unlimited.",
+    "NZB_LIMIT": "Usenet download size limit in GB. 0 = unlimited.",
+    "SEEDR_LIMIT": "Seedr download size limit in GB. 0 = unlimited.",
+    "YTDLP_LIMIT": "yt-dlp download size limit in GB. 0 = unlimited.",
+    "PLAYLIST_LIMIT": "Max items to download from a playlist. 0 = unlimited.",
+    "LEECH_LIMIT": "Leech (Telegram upload) size limit in GB. 0 = unlimited.",
+    "EXTRACT_LIMIT": "Extracted file size limit in GB. 0 = unlimited.",
+    "ARCHIVE_LIMIT": "Archive (zip) size limit in GB. 0 = unlimited.",
+    "STORAGE_LIMIT": "Minimum free storage to maintain in GB. Downloads cancelled if exceeded.",
+    "LEECH_LOG_CHAT": "Chat ID to dump all leeched files, or chat_id|topic_id for a forum topic. Leave empty to disable.",
+    "LEECH_DUMP_CHATS": 'Named leech dump chats selectable per task via -ud flag. Dict format: {"name": chat_id}. Example: {"A": -100123}.',
+    "LINKS_LOG_ID": "Chat ID for link logging.",
+    "MIRROR_LOG_ID": "Chat ID(s) for mirror logs. Space-separated for multiple.",
+    "LEECH_PREFIX": "Prefix added to leeched file names.",
+    "TMDB_ACCESS_TOKEN": "TMDb API key (v3) or Read Access Token (v4), used by AUTO_THUMBNAIL.",
+    "AUTO_THUMBNAIL": "Fetch a poster from TMDb as thumbnail when no other thumbnail exists. Default: False.",
+    "LEECH_CAPTION": "Custom caption for leeched files. Supports HTML.",
+    "LEECH_SUFFIX": "Suffix added to leeched file names.",
+    "LEECH_FONT": "Font style for captions: b, i, u, s, code, spoiler.",
+    "LEECH_SPLIT_SIZE": "Split size for Telegram uploads in bytes. Default: 2GB (4GB for premium).",
+    "MEDIA_GROUP": "Upload split parts as media group. Default: False.",
+    "USE_HYPER": "Enable HyperDL/HyperUP for faster Telegram transfers. Default: True.",
+    "HYPER_THREADS": "Number of parallel download parts (clients). 0 = auto.",
+    "HYPER_PIPELINE": "Concurrent GetFile requests per HyperDL part. Default: 4.",
+    "HYPER_CHUNK": "HyperDL working chunk size in bytes. Default: 512 * 1024 (512KB).",
+    "STREAM_PIPELINE": "Concurrent GetFile requests for /dl downloads. Default: 8.",
+    "STREAM_CHUNK": "Streaming chunk size in bytes, capped at 1 MiB. Default: 1048576.",
+    "STREAM_PER_CLIENT": "Concurrent playback streams allowed per bot. Raise for more simultaneous viewers, lower if Telegram floods. Default: 6.",
+    "STREAM_GATE": "Process-wide ceiling on concurrent GetFile calls. Default: 96.",
+    "MEM_BUDGET": "Memory ceiling for transfer buffers in MB. 0 = auto (15% of the container limit).",
+    "MEM_DEEP_STATS": "Add object counts to /memory. Costs a full GC scan per call. Default: False.",
+    "CPU_LIMIT": "CPU limit percentage for background services (SABnzbd, JDownloader). Default: 20.",
+    "FFMPEG_CORES": "CPUs given to FFmpeg. auto = 60% of them, all/0 = every CPU, a count (5), a percentage (75%), or a taskset list (0-4). Services take the rest.",
+    "THROTTLE_SERVICES": "Pause services during heavy ops (FFmpeg). auto=low-end only, always, never.",
+    "HYDRA_IP": "Hydra API IP address for search.",
+    "HYDRA_API_KEY": "Hydra API key for search.",
+    "NAME_SWAP": "Rename files using pattern. Format: old:new|old2:new2.",
+    "OWNER_ID": "Telegram User ID of the bot owner.",
+    "QUEUE_ALL": "Max parallel download+upload tasks. 0 = unlimited.",
+    "QUEUE_DOWNLOAD": "Max parallel downloading tasks. 0 = unlimited.",
+    "QUEUE_UPLOAD": "Max parallel uploading tasks. 0 = unlimited.",
+    "RCLONE_FLAGS": "Rclone flags. Format: key:value|key|key:value.",
+    "RCLONE_PATH": "Default rclone remote path for uploads.",
+    "RCLONE_SERVE_URL": "Public URL for rclone serve. Format: http://ip.",
+    "SHOW_CLOUD_LINK": "Show cloud link button on leeched files. Default: True.",
+    "RCLONE_SERVE_USER": "Username for rclone serve authentication.",
+    "RCLONE_SERVE_PASS": "Password for rclone serve authentication.",
+    "RCLONE_SERVE_PORT": "Port for rclone serve. Default: 8081.",
+    "RSS_CHAT": "Chat ID for RSS feed notifications.",
+    "RSS_DELAY": "RSS feed check interval in seconds. Default: 600.",
+    "RSS_SIZE_LIMIT": "RSS download size limit in GB. 0 = unlimited.",
+    "SEARCH_API_LINK": "Search API app URL for multi-search.",
+    "SEARCH_LIMIT": "Max search results per site. 0 = default API limit.",
+    "SEARCH_PLUGINS": "qBittorrent search plugin URLs. List format.",
+    "SET_COMMANDS": "Auto-set bot commands on start. Default: True.",
+    "STATUS_LIMIT": "Number of status messages to show. Default: 10.",
+    "STATUS_UPDATE_INTERVAL": "Status message refresh interval in seconds. Default: 15.",
+    "STOP_DUPLICATE": "Stop if file/folder exists in GDrive. Default: False.",
+    "STREAMWISH_API": "StreamWish API key for uploads.",
+    "SUDO_USERS": "User IDs with sudo access. Space-separated.",
+    "TELEGRAM_API": "Telegram API ID from my.telegram.org.",
+    "TELEGRAM_HASH": "Telegram API Hash from my.telegram.org.",
+    "TG_PROXY": "SOCKS5 proxy for Telegram connection. Format: socks5://user:pass@ip:port.",
+    "THUMBNAIL_LAYOUT": "Thumbnail layout for uploads. Format: WxH (e.g., 1280x720).",
+    "VERIFY_TIMEOUT": "Verification timeout in seconds. 0 = disabled.",
+    "LOGIN_PASS": "Password to skip token system. Leave empty to disable.",
+    "TORRENT_TIMEOUT": "Dead torrent timeout in seconds. 0 = disabled.",
+    "TIMEZONE": "Timezone for messages. Default: Asia/Kolkata.",
+    "USER_MAX_TASKS": "Max concurrent tasks per user. 0 = unlimited.",
+    "USER_TIME_INTERVAL": "Cooldown between tasks per user in seconds. 0 = disabled.",
+    "UPLOAD_PATHS": "Custom upload paths per extension. Dict format.",
+    "UPSTREAM_REPO": "GitHub repo URL for bot updates.",
+    "UPSTREAM_BRANCH": "Branch for updates. Default: wzv3.",
+    "USENET_SERVERS": "Usenet server configurations. List of dicts.",
+    "USER_SESSION_STRING": "Pyrogram session string for user account tasks.",
+    "TRANSMISSION_MODE": "Transmission mode: bot, user, or both. Default: both.",
+    "USE_SERVICE_ACCOUNTS": "Use Google Service Accounts. Default: False.",
+    "WEB_ACCESS_PASSWORD": "Secret for deriving proxy passwords. Set once, use derived passwords in browser. Empty = auto-generated.",
+    "WEB_PINCODE": "Ask for pincode in web file selection. Default: True.",
+    "YT_DLP_OPTIONS": "Default yt-dlp options. Format: key:value|key:value.",
+    "YT_DESP": "Description for YouTube uploads. Default: Uploaded with WZML-X bot.",
+    "YT_TAGS": "Tags for YouTube uploads. List format.",
+    "YT_CATEGORY_ID": "YouTube video category ID. Default: 22 (People & Blogs).",
+    "PLUGIN_INDEXES": "Extra plugin index URLs on top of the official one. Each must be a JSON file holding a plugins list.",
+    "ENABLE_TELEMETRY": "Send crash reports to telemetry.wzmlx.com to help fix bugs. Default: True.",
+    "YT_PRIVACY_STATUS": "YouTube upload privacy: public, unlisted, or private.",
+}
+
+PROTECTED_VARS = {
+    "TELEGRAM_HASH",
+    "TELEGRAM_API",
+    "OWNER_ID",
+    "BOT_TOKEN",
+    "DATABASE_URL",
+    "PROWLARR_API_KEY",
+    "SEEDR_PASSWORD",
+    "SEEDR_API_TOKEN",
+}
+
+SEEDR_VARS = ("DISABLE_SEEDR",) + tuple(
+    sorted(key for key in Config.get_all() if key.startswith("SEEDR_"))
+)
+
+
+def seedr_display_value(key, value):
+    """Hide Seedr credentials anywhere bot settings render their values."""
+    if key in ("SEEDR_API_TOKEN", "SEEDR_PASSWORD", "PROWLARR_API_KEY"):
+        return "configured" if value else "not set"
+    return value
+RESTART_VARS = {
+    "STREAM_TOKENS",
+    "CMD_SUFFIX",
+    "OWNER_ID",
+    "USER_SESSION_STRING",
+    "TELEGRAM_HASH",
+    "TELEGRAM_API",
+    "BOT_TOKEN",
+    "TG_PROXY",
+    "AUTHORIZED_CHATS",
+    "DATABASE_URL",
+}
+
+ONOFF_VARS = [
+    "DISABLE_TORRENTS",
+    "DISABLE_LEECH",
+    "DISABLE_MIRROR",
+    "DISABLE_BULK",
+    "DISABLE_MULTI",
+    "DISABLE_SEED",
+    "DISABLE_FF_MODE",
+    "DISABLE_MEGA",
+    "DISABLE_PLUGINS",
+    "DISABLE_JD",
+    "DISABLE_NZB",
+    "DISABLE_SEEDR",
+    "DISABLE_RSS",
+    "DISABLE_SEARCH",
+    "DISABLE_STREAM",
+    "DISABLE_YTDLP",
+]
+
+LIMIT_VARS = [
+    "DIRECT_LIMIT",
+    "MEGA_LIMIT",
+    "TORRENT_LIMIT",
+    "GD_DL_LIMIT",
+    "RC_DL_LIMIT",
+    "CLONE_LIMIT",
+    "JD_LIMIT",
+    "NZB_LIMIT",
+    "SEEDR_LIMIT",
+    "YTDLP_LIMIT",
+    "PLAYLIST_LIMIT",
+    "LEECH_LIMIT",
+    "EXTRACT_LIMIT",
+    "ARCHIVE_LIMIT",
+    "STORAGE_LIMIT",
+    "CPU_LIMIT",
+    "RSS_SIZE_LIMIT",
+    "SEARCH_LIMIT",
+    "STATUS_LIMIT",
+]
+
+LIMIT_UNITS = {
+    "CPU_LIMIT": "%",
+    "PLAYLIST_LIMIT": " items",
+    "SEARCH_LIMIT": " results",
+    "STATUS_LIMIT": " msgs",
+}
+
+RICH_STYLES = {
+    "b": raw.types.TextBold,
+    "i": raw.types.TextItalic,
+    "u": raw.types.TextUnderline,
+    "c": raw.types.TextFixed,
+    "m": raw.types.TextMarked,
+    "s": raw.types.TextStrike,
+}
+
+
+def rich_text(*parts):
+    texts = []
+    for part in parts:
+        if isinstance(part, str):
+            texts.append(raw.types.TextPlain(text=part))
+        else:
+            style, value = part
+            texts.append(
+                RICH_STYLES[style](text=raw.types.TextPlain(text=value))
+            )
+    return raw.types.TextConcat(texts=texts)
+
+
+async def get_buttons(key=None, edit_type=None, edit_mode=False):
     buttons = ButtonMaker()
     if key is None:
-        buttons.ibutton('Config Variables', "botset var")
-        buttons.ibutton('Private Files', "botset private")
-        buttons.ibutton('Qbit Settings', "botset qbit")
-        buttons.ibutton('Aria2c Settings', "botset aria")
-        buttons.ibutton('Close', "botset close")
-        msg = 'Bot Settings:'
-    elif key == 'var':
-        for k in list(OrderedDict(sorted(config_dict.items())).keys())[START:10+START]:
-            buttons.ibutton(k, f"botset editvar {k}")
-        buttons.ibutton('Back', "botset back")
-        buttons.ibutton('Close', "botset close")
-        for x in range(0, len(config_dict)-1, 10):
-            buttons.ibutton(
-                f'{int(x/10)}', f"botset start var {x}", position='footer')
-        msg = f'Config Variables | Page: {int(START/10)}'
-    elif key == 'private':
-        buttons.ibutton('Back', "botset back")
-        buttons.ibutton('Close', "botset close")
-        msg = '''Send private file: config.env, token.pickle, accounts.zip, list_drives.txt, cookies.txt, terabox.txt, .netrc or any other file!
-To delete private file send only the file name as text message.
-Note: Changing .netrc will not take effect for aria2c until restart.
-Timeout: 60 sec'''
-    elif key == 'aria':
-        for k in list(aria2_options.keys())[START:10+START]:
-            buttons.ibutton(k, f"botset editaria {k}")
-        if STATE == 'view':
-            buttons.ibutton('Edit', "botset edit aria")
-        else:
-            buttons.ibutton('View', "botset view aria")
-        buttons.ibutton('Add New key', "botset editaria newkey")
-        buttons.ibutton('Back', "botset back")
-        buttons.ibutton('Close', "botset close")
-        for x in range(0, len(aria2_options)-1, 10):
-            buttons.ibutton(
-                f'{int(x/10)}', f"botset start aria {x}", position='footer')
-        msg = f'Aria2c Options | Page: {int(START/10)} | State: {STATE}'
-    elif key == 'qbit':
-        for k in list(qbit_options.keys())[START:10+START]:
-            buttons.ibutton(k, f"botset editqbit {k}")
-        if STATE == 'view':
-            buttons.ibutton('Edit', "botset edit qbit")
-        else:
-            buttons.ibutton('View', "botset view qbit")
-        buttons.ibutton('Back', "botset back")
-        buttons.ibutton('Close', "botset close")
-        for x in range(0, len(qbit_options)-1, 10):
-            buttons.ibutton(
-                f'{int(x/10)}', f"botset start qbit {x}", position='footer')
-        msg = f'Qbittorrent Options | Page: {int(START/10)} | State: {STATE}'
-    elif edit_type == 'editvar':
-        msg = f'<b>Variable:</b> <code>{key}</code>\n\n'
-        msg += f'<b>Description:</b> {default_desp.get(key, "No Description Provided")}\n\n'
-        if mess.chat.type == ChatType.PRIVATE:
-            msg += f'<b>Value:</b> <spoiler> {config_dict.get(key, "None")} </spoiler>\n\n'
-        else:
-            buttons.ibutton('View Var Value',
-                            f"botset showvar {key}", position="header")
-        buttons.ibutton('Back', "botset back var", position="footer")
-        if key not in bool_vars:
-            if not edit_mode:
-                buttons.ibutton('Edit Value', f"botset editvar {key} edit")
+        buttons.data_button("Config Variables", "botset var")
+        buttons.data_button("Seedr Settings", "botset seedr")
+        buttons.data_button("Module Settings", "botset setonoff")
+        buttons.data_button("Private Files", "botset private open")
+        buttons.data_button("Qbit Settings", "botset qbit")
+        buttons.data_button("Aria2c Settings", "botset aria")
+        buttons.data_button("Sabnzbd Settings", "botset nzb")
+        buttons.data_button("JDownloader Sync", "botset syncjd")
+        buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+        msg = "Bot Settings:"
+    elif edit_type is not None:
+        if edit_type == "ariavar":
+            buttons.data_button("Back", "botset aria", style=ButtonStyle.PRIMARY)
+            if key != "newkey":
+                buttons.data_button("Empty String", f"botset emptyaria {key}")
+            buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+            msg = (
+                "<i>Send a key with value.</i> Example: <code>https-proxy-user:value</code>\n┖ <b>Time Left :</b> <code>60 sec</code>"
+                if key == "newkey"
+                else f"<i>Send a valid value for <code>{key}</code>.</i> Current value is <code>{aria2_options[key]}</code>\n┖ <b>Time Left :</b> <code>60 sec</code>"
+            )
+        elif edit_type == "qbitvar":
+            buttons.data_button("Back", "botset qbit", style=ButtonStyle.PRIMARY)
+            buttons.data_button("Empty String", f"botset emptyqbit {key}")
+            buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+            msg = f"<i>Send a valid value for <code>{key}</code>.</i> Current value is <code>{qbit_options[key]}</code>\n┖ <b>Time Left :</b> <code>60 sec</code>"
+        elif edit_type == "nzbvar":
+            buttons.data_button("Back", "botset nzb", style=ButtonStyle.PRIMARY)
+            buttons.data_button("Default", f"botset resetnzb {key}")
+            buttons.data_button("Empty String", f"botset emptynzb {key}")
+            buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+            msg = f"<i>Send a valid value for <code>{key}</code>.</i> Current value is <code>{nzb_options[key]}</code>\nIf the value is list then separate them by space or ,\nExample: <code>.exe,info</code> or <code>.exe .info</code>\n┖ <b>Time Left :</b> <code>60 sec</code>"
+        elif edit_type.startswith("nzbsevar"):
+            index = 0 if key == "newser" else int(edit_type.replace("nzbsevar", ""))
+            buttons.data_button(
+                "Back", f"botset nzbser{index}", style=ButtonStyle.PRIMARY
+            )
+            if key != "newser":
+                buttons.data_button("Empty", f"botset emptyserkey {index} {key}")
+            buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+            if key == "newser":
+                msg = "<i>Send one server as dictionary <code>{}</code>, like in config.py without <code>[]</code>.</i>\n┖ <b>Time Left :</b> <code>60 sec</code>"
             else:
-                buttons.ibutton('Stop Edit', f"botset editvar {key}")
-        if key not in ['TELEGRAM_HASH', 'TELEGRAM_API', 'OWNER_ID', 'BOT_TOKEN'] and key not in bool_vars:
-            buttons.ibutton('Reset', f"botset resetvar {key}")
-        buttons.ibutton('Close', "botset close", position="footer")
-        if edit_mode and key in ['SUDO_USERS', 'CMD_SUFFIX', 'OWNER_ID', 'USER_SESSION_STRING', 'TELEGRAM_HASH',
-                                 'TELEGRAM_API', 'AUTHORIZED_CHATS', 'DATABASE_URL', 'BOT_TOKEN', 'DOWNLOAD_DIR']:
-            msg += '<b>Note:</b> Restart required for this edit to take effect!\n\n'
-        if edit_mode and key not in bool_vars:
-            msg += '<i>Send a valid value for the above Var.</i> <b>Timeout:</b> 60 sec'
-        if key in bool_vars:
-            msg += '<i>Choose a valid value for the above Var</i>'
-            buttons.ibutton('True', f"botset boolvar {key} on")
-            buttons.ibutton('False', f"botset boolvar {key} off")
-    elif edit_type == 'editaria':
-        buttons.ibutton('Back', "botset back aria")
-        if key != 'newkey':
-            buttons.ibutton('Default', f"botset resetaria {key}")
-            buttons.ibutton('Empty String', f"botset emptyaria {key}")
-        buttons.ibutton('Close', "botset close")
-        if key == 'newkey':
-            msg = 'Send a key with value. Example: https-proxy-user:value'
+                msg = f"<i>Send a valid value for <code>{key}</code> in server <code>{Config.USENET_SERVERS[index]['name']}</code>.</i> Current value is <code>{Config.USENET_SERVERS[index][key]}</code>\n┖ <b>Time Left :</b> <code>60 sec</code>"
+        elif edit_type == "editvar":
+            msg = f"<b>Variable:</b> <code>{key}</code>\n\n"
+            msg += f"<b>Description:</b> {DEFAULT_DESP.get(key, 'No Description Provided')}\n\n"
+            value = Config.get(key)
+            if key in ("SEEDR_API_TOKEN", "SEEDR_PASSWORD", "PROWLARR_API_KEY"):
+                value = seedr_display_value(key, value).capitalize()
+                value = value.replace("Configured", "Configured (hidden)")
+            if value == "":
+                value = "None"
+            msg += f"<b>Current Value:</b> <code>{value}</code>\n\n"
+            buttons.data_button(
+                "View Value", f"botset showvar {key}", position="header"
+            )
+            buttons.data_button(
+                "Back",
+                f"botset back {'seedr' if key in SEEDR_VARS else 'setlimit' if key in LIMIT_VARS else 'var'}",
+                position="footer",
+            )
+            if key not in BOOL_VARS:
+                if not edit_mode:
+                    buttons.data_button(
+                        "Edit Value",
+                        f"botset editvar {key} edit",
+                        style=ButtonStyle.PRIMARY,
+                    )
+                else:
+                    buttons.data_button("Stop Edit", f"botset editvar {key}")
+            else:
+                msg += "<i>Choose a valid value for the above Var</i>\n\n"
+                buttons.data_button("True", f"botset boolvar {key} on")
+                buttons.data_button("False", f"botset boolvar {key} off")
+            if key not in BOOL_VARS and key not in PROTECTED_VARS:
+                buttons.data_button("Reset", f"botset resetvar {key}")
+            buttons.data_button(
+                "Close", "botset close", position="footer", style=ButtonStyle.DANGER
+            )
+            if edit_mode and key in RESTART_VARS:
+                msg += (
+                    "\n<b>Note:</b> Restart required for this edit to take effect!\n\n"
+                )
+            if edit_mode and key not in BOOL_VARS:
+                msg += "<i>Send a valid value for the above Var.</i>\n┖ <b>Time Left :</b> <code>60 sec</code>"
+    elif key == "seedr":
+        rows = []
+        labels = {
+            "DISABLE_SEEDR": "Seedr service",
+            "SEEDR_QBMIRROR_ENABLED": "Seedr first for /qbmirror",
+            "SEEDR_API_TOKEN": "Personal access token",
+            "SEEDR_EMAIL": "Legacy account email",
+            "SEEDR_PASSWORD": "Legacy account password",
+            "SEEDR_FIRST_TIMEOUT": "Fallback timeout (seconds)",
+            "SEEDR_POLL_INTERVAL": "Status check interval (seconds)",
+            "SEEDR_DELETE_FOLDER": "Delete Seedr files after download",
+            "SEEDR_LIMIT": "Maximum Seedr size (GB, 0 = unlimited)",
+        }
+        for variable in SEEDR_VARS:
+            value = Config.get(variable)
+            value = seedr_display_value(variable, value)
+            label = labels.get(variable, variable.replace("_", " ").title())
+            rows.append(f"• <b>{label}:</b> <code>{value}</code>")
+            buttons.data_button(label, f"botset editvar {variable}")
+        buttons.data_button("Back", "botset back", position="footer")
+        buttons.data_button("Close", "botset close", position="footer", style=ButtonStyle.DANGER)
+        msg = "⌬ <b><u>Seedr Settings</u></b>\n\n" + "\n".join(rows)
+    elif key == "var":
+        conf_dict = {
+            k: v
+            for k, v in Config.get_all().items()
+            if not k.startswith("DISABLE_") and k not in LIMIT_VARS
+        }
+        all_keys = list(conf_dict.keys())
+        for k in all_keys[start : 10 + start]:
+            buttons.data_button(k, f"botset editvar {k}")
+        buttons.data_button("Back", "botset back")
+        buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+        for x in range(0, len(all_keys), 10):
+            buttons.data_button(
+                f"{int(x / 10) + 1}", f"botset start var {x}", position="footer"
+            )
+        msg = f"⌬ <b><u>Config Variables</u></b> | <b><u>Page: {int(start / 10) + 1}</b></u>"
+    elif key == "setonoff":
+        buttons.data_button("On/Off Settings", "botset settoggle")
+        buttons.data_button("Limit Settings", "botset setlimit")
+        buttons.data_button("Back", "botset back", position="footer")
+        buttons.data_button(
+            "Close", "botset close", position="footer", style=ButtonStyle.DANGER
+        )
+        msg = "⌬ <b><u>Module Settings</u></b>"
+    elif key == "settoggle":
+        for k in ONOFF_VARS:
+            val = Config.get(k)
+            label = k.removeprefix("DISABLE_")
+            if not val:
+                buttons.data_button(
+                    f"✓ {label}",
+                    f"botset toggleonoff {k} on",
+                    style=ButtonStyle.PRIMARY,
+                )
+            else:
+                buttons.data_button(
+                    label,
+                    f"botset toggleonoff {k} off",
+                    style=ButtonStyle.DANGER,
+                )
+        buttons.data_button("Back", "botset back setonoff", position="footer")
+        buttons.data_button(
+            "Close", "botset close", position="footer", style=ButtonStyle.DANGER
+        )
+        msg = "⌬ <b><u>On/Off Settings</u></b>"
+    elif key == "setlimit":
+        page_vars = LIMIT_VARS[start : 10 + start]
+        for k in page_vars:
+            buttons.data_button(
+                k.removesuffix("_LIMIT").replace("_", " "),
+                f"botset editvar {k}",
+                style=ButtonStyle.SUCCESS if Config.get(k) else None,
+            )
+        buttons.data_button("Back", "botset back setonoff", position="footer")
+        buttons.data_button(
+            "Close", "botset close", position="footer", style=ButtonStyle.DANGER
+        )
+        if start:
+            buttons.data_button(
+                "⫷", f"botset start setlimit {start - 10}", position="l_body"
+            )
+        if start + 10 < len(LIMIT_VARS):
+            buttons.data_button(
+                "⫸", f"botset start setlimit {start + 10}", position="l_body"
+            )
+        rows = [
+            [
+                InputRichBlockTableCell(
+                    rich_text(k.removesuffix("_LIMIT").replace("_", " "))
+                ),
+                InputRichBlockTableCell(
+                    rich_text(("c", f"{v}{LIMIT_UNITS.get(k, ' GB')}")),
+                    align_right=True,
+                ),
+            ]
+            for k in LIMIT_VARS
+            if (v := Config.get(k))
+        ]
+        msg = InputRichMessage(
+            blocks=[
+                InputRichBlockSectionHeading(
+                    text=rich_text(("u", "Limit Settings")), size=3
+                ),
+                InputRichBlockParagraph(
+                    text=rich_text(
+                        ("m", f" {len(rows)} of {len(LIMIT_VARS)} active "),
+                    )
+                ),
+                InputRichBlockTable(
+                    title=rich_text(("b", "Active limits")),
+                    rows=rows,
+                    bordered=True,
+                    striped=True,
+                    compact=True,
+                )
+                if rows
+                else InputRichBlockParagraph(
+                    text=rich_text(("i", "No limits set, everything is unlimited."))
+                ),
+                InputRichBlockDivider(),
+                InputRichBlockDetails(
+                    summary=rich_text(("b", "How this works")),
+                    blocks=[
+                        InputRichBlockList(
+                            items=[
+                                InputRichBlockListItem(
+                                    text=rich_text(
+                                        "Send ",
+                                        ("c", "0"),
+                                        " to clear a limit and make it ",
+                                        ("i", "unlimited"),
+                                        ".",
+                                    )
+                                ),
+                                InputRichBlockListItem(
+                                    text=rich_text(
+                                        "Sizes are in ",
+                                        ("b", "GB"),
+                                        " unless the table shows another unit.",
+                                    )
+                                ),
+                                InputRichBlockListItem(
+                                    text=rich_text(
+                                        ("c", "CPU_LIMIT"),
+                                        " is a percentage, ",
+                                        ("c", "STATUS_LIMIT"),
+                                        " counts messages.",
+                                    )
+                                ),
+                                InputRichBlockListItem(
+                                    text=rich_text(
+                                        "Limits apply per task, not per user."
+                                    )
+                                ),
+                            ],
+                            ordered=False,
+                        )
+                    ],
+                ),
+                InputRichBlockFooter(
+                    text=rich_text(
+                        ("i", "Page "),
+                        ("b", f"{int(start / 10) + 1}"),
+                        ("i", f" of {-(-len(LIMIT_VARS) // 10)}"),
+                    )
+                ),
+            ]
+        )
+    elif key == "private":
+        if edit_mode:
+            buttons.data_button("Stop Invoke File", "botset private stop", "header")
         else:
-            msg = f'Send a valid value for {key}. Timeout: 60 sec'
-    elif edit_type == 'editqbit':
-        buttons.ibutton('Back', "botset back qbit")
-        buttons.ibutton('Empty String', f"botset emptyqbit {key}")
-        buttons.ibutton('Close', "botset close")
-        msg = f'Send a valid value for {key}. Timeout: 60 sec'
-    button = buttons.build_menu(1) if key is None else buttons.build_menu(2)
-    return msg, button
+            buttons.data_button("Create New File", "botset private new")
+            buttons.data_button("Add/Delete File", "botset private edit")
+        buttons.data_button("Back", "botset back", position="footer")
+        buttons.data_button(
+            "Close", "botset close", position="footer", style=ButtonStyle.DANGER
+        )
+        txt = "\n┠ ".join(
+            [
+                f"<code>{fn}</code> → <b>{'Exists' if await aiopath.isfile(fn) else 'Not Exists'}</b>"
+                for fn in [
+                    "config.py",
+                    "token.pickle",
+                    "rclone.conf",
+                    "accounts.zip",
+                    "list_drives.txt",
+                    "shortener.txt",
+                    "categories.txt",
+                    "cookies.txt",
+                    "terabox.txt",
+                    ".netrc",
+                ]
+            ]
+        )
+        msg = f"""⌬ <b>Private File Settings</b>
+┠ <b>Dashboard :</b> 
+┃
+┠ {txt}
+┃
+┠ <b>Delete File</b> → Send the file name as text message, Like <code>rclone.conf</code>.
+┃
+┖ <b>Note:</b> Changing .netrc will not take effect for aria2c until restart."""
+        if edit_mode:
+            msg += "\n\n<i>Send the file name to delete the file, file to save the file & for new file create, follow below format.</i> \n\n<b>Format:</b> \n<code>file_name\n\ncontents of file</code></i>\n┖ <b>Time Left :</b> <code>60 sec</code>"
+    elif key == "aria":
+        for k in list(aria2_options.keys())[start : 10 + start]:
+            if k not in ["checksum", "index-out", "out", "pause", "select-file"]:
+                buttons.data_button(k, f"botset ariavar {k}")
+        if state == "view":
+            buttons.data_button("Edit", "botset edit aria")
+        else:
+            buttons.data_button("View", "botset view aria")
+        buttons.data_button("Add new key", "botset ariavar newkey")
+        buttons.data_button("Back", "botset back")
+        buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+        for x in range(0, len(aria2_options), 10):
+            buttons.data_button(
+                f"{int(x / 10)}", f"botset start aria {x}", position="footer"
+            )
+        msg = f"Aria2c Options | Page: {int(start / 10)} | State: {state}"
+    elif key == "qbit":
+        for k in list(qbit_options.keys())[start : 10 + start]:
+            buttons.data_button(k, f"botset qbitvar {k}")
+        if state == "view":
+            buttons.data_button("Edit", "botset edit qbit")
+        else:
+            buttons.data_button("View", "botset view qbit")
+        buttons.data_button("Sync Qbittorrent", "botset syncqbit")
+        buttons.data_button("Back", "botset back")
+        buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+        for x in range(0, len(qbit_options), 10):
+            buttons.data_button(
+                f"{int(x / 10)}", f"botset start qbit {x}", position="footer"
+            )
+        msg = f"Qbittorrent Options | Page: {int(start / 10)} | State: {state}"
+    elif key == "nzb":
+        for k in list(nzb_options.keys())[start : 10 + start]:
+            buttons.data_button(k, f"botset nzbvar {k}")
+        if state == "view":
+            buttons.data_button("Edit", "botset edit nzb")
+        else:
+            buttons.data_button("View", "botset view nzb")
+        buttons.data_button("Servers", "botset nzbserver")
+        buttons.data_button("Sync Sabnzbd", "botset syncnzb")
+        buttons.data_button("Back", "botset back")
+        buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+        for x in range(0, len(nzb_options), 10):
+            buttons.data_button(
+                f"{int(x / 10)}", f"botset start nzb {x}", position="footer"
+            )
+        msg = f"Sabnzbd Options | Page: {int(start / 10)} | State: {state}"
+    elif key == "nzbserver":
+        servers = (
+            Config.USENET_SERVERS if isinstance(Config.USENET_SERVERS, list) else []
+        )
+        if len(servers) > 0:
+            for index, k in enumerate(servers[start : 10 + start]):
+                buttons.data_button(k["name"], f"botset nzbser{index}")
+        buttons.data_button("Add New", "botset nzbsevar newser")
+        buttons.data_button("Back", "botset nzb")
+        buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+        if len(servers) > 10:
+            for x in range(0, len(servers), 10):
+                buttons.data_button(
+                    f"{int(x / 10)}", f"botset start nzbser {x}", position="footer"
+                )
+        msg = f"Usenet Servers | Page: {int(start / 10)} | State: {state}"
+    elif key.startswith("nzbser"):
+        servers = (
+            Config.USENET_SERVERS if isinstance(Config.USENET_SERVERS, list) else []
+        )
+        index = int(key.replace("nzbser", ""))
+        if not servers or index >= len(servers):
+            return await get_buttons("nzbserver")
+        for k in list(servers[index].keys())[start : 10 + start]:
+            buttons.data_button(k, f"botset nzbsevar{index} {k}")
+        if state == "view":
+            buttons.data_button("Edit", f"botset edit {key}")
+        else:
+            buttons.data_button("View", f"botset view {key}")
+        buttons.data_button("Remove Server", f"botset remser {index}")
+        buttons.data_button("Back", "botset nzbserver")
+        buttons.data_button("Close", "botset close", style=ButtonStyle.DANGER)
+        if len(servers[index].keys()) > 10:
+            for x in range(0, len(servers[index]), 10):
+                buttons.data_button(
+                    f"{int(x / 10)}", f"botset start {key} {x}", position="footer"
+                )
+        msg = f"Server Keys | Page: {int(start / 10)} | State: {state}"
+    else:
+        msg = "Unknown option"
+
+    return msg, buttons.build_menu(1 if key is None else 2, lb_cols=8)
 
 
-async def update_buttons(message, key=None, edit_type=None, edit_mode=None):
-    msg, button = await get_buttons(key, edit_type, edit_mode, message)
-    await editMessage(message, msg, button)
+async def update_buttons(message, key=None, edit_type=None, edit_mode=False):
+    msg, button = await get_buttons(key, edit_type, edit_mode)
+    await edit_message(message, msg, button)
 
 
+@new_task
 async def edit_variable(_, message, pre_message, key):
     handler_dict[message.chat.id] = False
     value = message.text
-    if key == 'RSS_DELAY':
+    if value.lower() == "true":
+        value = True
+    elif value.lower() == "false":
+        value = False
+        if key in ("INC_TASK_NOTIFY", "INC_TASK_RESUME") and Config.DATABASE_URL:
+            await database.trunc_table("tasks")
+    elif key == "STATUS_UPDATE_INTERVAL":
         value = int(value)
-        addJob(value)
-    elif key == 'DOWNLOAD_DIR':
-        if not value.endswith('/'):
-            value += '/'
-    elif key in ['LEECH_LOG_ID', 'RSS_CHAT_ID']:
+        if len(task_dict) != 0 and (st := intervals["status"]):
+            for cid, intvl in list(st.items()):
+                intvl.cancel()
+                intervals["status"][cid] = SetInterval(
+                    value, update_status_message, cid
+                )
+    elif key == "TORRENT_TIMEOUT":
+        await TorrentManager.change_aria2_option("bt-stop-timeout", value)
         value = int(value)
-    elif key == 'STATUS_UPDATE_INTERVAL':
-        value = int(value)
-        if len(download_dict) != 0:
-            async with status_reply_dict_lock:
-                if Interval:
-                    Interval[0].cancel()
-                    Interval.clear()
-                    Interval.append(setInterval(value, update_all_messages))
-    elif key == 'TORRENT_TIMEOUT':
-        value = int(value)
-        downloads = await sync_to_async(aria2.get_downloads)
-        for download in downloads:
-            if not download.is_complete:
-                try:
-                    await sync_to_async(aria2.client.change_option, download.gid, {'bt-stop-timeout': f'{value}'})
-                except Exception as e:
-                    LOGGER.error(e)
-        aria2_options['bt-stop-timeout'] = f'{value}'
-    elif key == 'LEECH_SPLIT_SIZE':
-        value = min(int(value), MAX_SPLIT_SIZE)
-    elif key == 'CAP_FONT':
-        value = value.strip().lower()
-        if value not in ['b', 'i', 'u', 's', 'spoiler', 'code']:
-            value = 'code'
-    elif key == 'BASE_URL_PORT':
-        value = int(value)
-        if config_dict['BASE_URL']:
-            await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
-            await create_subprocess_shell(f"gunicorn web.wserver:app --bind 0.0.0.0:{value} --worker-class gevent")
-    elif key == 'EXTENSION_FILTER':
+    elif key == "LEECH_SPLIT_SIZE":
+        value = min(int(value), TgClient.MAX_SPLIT_SIZE)
+    elif key == "EXCLUDED_EXTENSIONS":
         fx = value.split()
-        GLOBAL_EXTENSION_FILTER.clear()
-        GLOBAL_EXTENSION_FILTER.append('.aria2')
+        excluded_extensions.clear()
+        excluded_extensions.extend(["aria2", "!qB"])
         for x in fx:
-            if x.strip().startswith('.'):
-                x = x.lstrip('.')
-            GLOBAL_EXTENSION_FILTER.append(x.strip().lower())
-    elif key == 'GDRIVE_ID':
-        if DRIVES_NAMES and DRIVES_NAMES[0] == 'Main':
-            DRIVES_IDS[0] = value
+            x = x.lstrip(".")
+            excluded_extensions.append(x.strip().lower())
+    elif key == "GDRIVE_ID":
+        if drives_names and drives_names[0] == "Main":
+            drives_ids[0] = value
         else:
-            DRIVES_IDS.insert(0, value)
-    elif key == 'INDEX_URL':
-        if DRIVES_NAMES and DRIVES_NAMES[0] == 'Main':
-            INDEX_URLS[0] = value
+            drives_ids.insert(0, value)
+    elif key == "INDEX_URL":
+        if drives_names and drives_names[0] == "Main":
+            index_urls[0] = value
         else:
-            INDEX_URLS.insert(0, value)
+            index_urls.insert(0, value)
+    elif key == "LINKS_LOG_ID":
+        if value.strip():
+            try:
+                value = int(value.strip())
+            except ValueError:
+                await send_message(
+                    message,
+                    "Invalid value! LINKS_LOG_ID must be a valid integer chat ID.",
+                )
+                return await update_buttons(pre_message, "var")
+    elif key == "MIRROR_LOG_ID":
+        if value.strip():
+            try:
+                value = int(value.strip())
+            except ValueError:
+                await send_message(
+                    message,
+                    "Invalid value! MIRROR_LOG_ID must be a valid integer chat ID.",
+                )
+                return await update_buttons(pre_message, "var")
+    elif key == "LEECH_LOG_CHAT":
+        if value.strip():
+            chat, thread = parse_dest(value.strip())
+            if not isinstance(chat, int) or ("|" in value and thread is None):
+                await send_message(
+                    message,
+                    "Invalid value! LEECH_LOG_CHAT must be a chat ID, "
+                    "optionally with a topic id as chat_id|topic_id.",
+                )
+                return await update_buttons(pre_message, "var")
+            try:
+                await verify_dump_access(
+                    TgClient.bot,
+                    chat,
+                    "The bot",
+                    require_delete=Config.DELETE_LINKS,
+                )
+            except ValueError as err:
+                await send_message(message, str(err))
+                return await update_buttons(pre_message, "var")
+            value = value.strip() if thread else chat
+    elif key == "LEECH_DUMP_CHATS":
+        if isinstance(value, str):
+            if value.startswith("{") and value.endswith("}"):
+                try:
+                    value = literal_eval(value)
+                except Exception:
+                    await send_message(message, "Invalid dict format!")
+                    return await update_buttons(pre_message, "var")
+            else:
+                await send_message(
+                    message,
+                    'LEECH_DUMP_CHATS must be a dict. Format: {"A": -100123456}',
+                )
+                return await update_buttons(pre_message, "var")
+        if not isinstance(value, dict):
+            await send_message(
+                message, 'LEECH_DUMP_CHATS must be a dict. Format: {"A": -100123456}'
+            )
+            return await update_buttons(pre_message, "var")
+        for dump_name, dump_dest in value.items():
+            chat, _ = parse_dest(str(dump_dest).strip())
+            if not chat:
+                await send_message(
+                    message, f"Invalid destination for dump <code>{dump_name}</code>."
+                )
+                return await update_buttons(pre_message, "var")
+            try:
+                await verify_dump_access(TgClient.bot, chat, "The bot")
+            except ValueError as err:
+                await send_message(message, str(err))
+                return await update_buttons(pre_message, "var")
+    elif key == "AUTHORIZED_CHATS":
+        aid = value.split()
+        auth_chats.clear()
+        for id_ in aid:
+            chat_id, *thread_ids = id_.split("|")
+            chat_id = int(chat_id.strip())
+            if thread_ids:
+                thread_ids = list(map(lambda x: int(x.strip()), thread_ids))
+                auth_chats[chat_id] = thread_ids
+            else:
+                auth_chats[chat_id] = []
+    elif key == "SUDO_USERS":
+        sudo_users.clear()
+        aid = value.split()
+        for id_ in aid:
+            sudo_users.append(int(id_.strip()))
+    elif key == "LOGIN_PASS":
+        value = str(value)
+    elif key == "DEBRID_LINK_API":
+        value = str(value)
+    elif key == "ALLDEBRID_API_KEY":
+        value = str(value)
+    elif key == "ALLDEBRID_NO_SEED_TIMEOUT":
+        try:
+            value = int(value)
+            if value < 0:
+                raise ValueError
+        except ValueError:
+            await send_message(
+                message,
+                "Invalid value! ALLDEBRID_NO_SEED_TIMEOUT must be 0 (no limit) or seconds.",
+            )
+            return await update_buttons(pre_message, "var")
     elif value.isdigit():
         value = int(value)
-    config_dict[key] = value
-    await update_buttons(pre_message, key, 'editvar', False)
-    await message.delete()
-    if DATABASE_URL:
-        await DbManger().update_config({key: value})
-    if key in ['SEARCH_PLUGINS', 'SEARCH_API_LINK']:
+    elif value.startswith("[") and value.endswith("]"):
+        try:
+            value = literal_eval(value)
+        except Exception:
+            await send_message(message, "Invalid list/dict format!")
+            return
+    elif value.startswith("{") and value.endswith("}"):
+        try:
+            value = literal_eval(value)
+        except Exception:
+            await send_message(message, "Invalid dict format!")
+            return
+    if key in ("SEEDR_FIRST_TIMEOUT", "SEEDR_POLL_INTERVAL"):
+        try:
+            value = int(value)
+            if value < 1:
+                raise ValueError
+        except (TypeError, ValueError):
+            await send_message(message, f"{key} must be a positive number of seconds.")
+            return await update_buttons(pre_message, key, "editvar", True)
+    elif key == "SEEDR_LIMIT":
+        try:
+            value = int(value)
+            if value < 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            await send_message(message, "SEEDR_LIMIT must be 0 or a positive size in GB.")
+            return await update_buttons(pre_message, key, "editvar", True)
+    elif key in ("SEEDR_API_TOKEN", "SEEDR_PASSWORD", "SEEDR_EMAIL"):
+        value = value.strip()
+    if key == "USENET_SERVERS":
+        if not isinstance(value, list):
+            await send_message(message, "USENET_SERVERS must be a list of dicts!")
+            return
+        for s in value:
+            if not isinstance(s, dict):
+                await send_message(message, "Each USENET_SERVERS entry must be a dict!")
+                return
+            missing = [f for f in REQUIRED_SERVER_FIELDS if not s.get(f)]
+            if missing:
+                await send_message(
+                    message, f"Server missing required field(s): {', '.join(missing)}"
+                )
+                return
+    if not isinstance(value, (str, int, float, bool, list, dict, type(None))):
+        value = str(value)
+    Config.set(key, value)
+    if key == "CMD_SUFFIX":
+        BotCommands.refresh_commands()
+    await update_buttons(pre_message, key, "editvar", False)
+    await delete_message(message)
+    await database.update_config({key: value})
+    if key in ["SEARCH_PLUGINS", "SEARCH_API_LINK"]:
         await initiate_search_tools()
-    elif key in ['QUEUE_ALL', 'QUEUE_DOWNLOAD', 'QUEUE_UPLOAD']:
+    elif key in ["QUEUE_ALL", "QUEUE_DOWNLOAD", "QUEUE_UPLOAD"]:
         await start_from_queued()
-    elif key in ['RCLONE_SERVE_URL', 'RCLONE_SERVE_PORT', 'RCLONE_SERVE_USER', 'RCLONE_SERVE_PASS']:
+    elif key in [
+        "RCLONE_SERVE_URL",
+        "RCLONE_SERVE_PORT",
+        "RCLONE_SERVE_USER",
+        "RCLONE_SERVE_PASS",
+    ]:
         await rclone_serve_booter()
+    elif key in ["JD_EMAIL", "JD_PASS"]:
+        await jdownloader.boot()
+    elif key == "RSS_DELAY":
+        add_job()
+    elif key == "USENET_SERVERS":
+        for s in value:
+            await sabnzbd_client.set_special_config("servers", s)
 
 
+@new_task
+async def toggle_bool_var(_, query, pre_message, key, value):
+    handler_dict[query.message.chat.id] = False
+    bool_value = value == "on"
+    Config.set(key, bool_value)
+    await update_buttons(pre_message, key, "editvar", False)
+    await database.update_config({key: bool_value})
+    if (
+        key in ("INC_TASK_NOTIFY", "INC_TASK_RESUME")
+        and not bool_value
+        and Config.DATABASE_URL
+    ):
+        await database.trunc_table("tasks")
+    elif key in ["QUEUE_ALL", "QUEUE_DOWNLOAD", "QUEUE_UPLOAD"]:
+        await start_from_queued()
+
+
+@new_task
+async def toggle_onoff_var(_, query, pre_message, key, value):
+    handler_dict[query.message.chat.id] = False
+    bool_value = value == "on"
+    Config.set(key, bool_value)
+    await database.update_config({key: bool_value})
+    await _handle_service_toggle(key, bool_value)
+    await update_buttons(pre_message, "settoggle")
+
+
+async def _handle_service_toggle(key, disabled):
+    if key == "DISABLE_JD":
+        if disabled:
+            if jdownloader.is_connected:
+                try:
+                    await jdownloader.device.downloadcontroller.stop_downloads()
+                    await jdownloader.close()
+                except Exception:
+                    pass
+                try:
+                    await cmd_exec(["pkill", "-9", "-f", "java"])
+                except Exception:
+                    pass
+                LOGGER.info("JDownloader stopped via Module Settings")
+        else:
+            try:
+                from ..core.startup import load_configurations
+
+                await load_configurations()
+            except Exception:
+                pass
+            bot_loop.create_task(jdownloader.boot())
+            LOGGER.info("JDownloader starting via Module Settings")
+    elif key == "DISABLE_NZB":
+        if disabled:
+            if sabnzbd_client.LOGGED_IN:
+                try:
+                    await gather(
+                        sabnzbd_client.pause_all(),
+                        sabnzbd_client.close(),
+                    )
+                except Exception:
+                    pass
+                try:
+                    await cmd_exec(["pkill", "-9", "-f", "SABnzbd"])
+                except Exception:
+                    pass
+                LOGGER.info("SABnzbd stopped via Module Settings")
+        else:
+            LOGGER.info("SABnzbd requires restart to re-enable")
+    elif key == "DISABLE_STREAM":
+        from ..core.stream_server import spawn_stream_server, stop_stream_server
+
+        if disabled:
+            await stop_stream_server()
+            LOGGER.info("Stream server stopped via Module Settings")
+        else:
+            spawn_stream_server()
+            LOGGER.info("Stream server started via Module Settings")
+    elif key == "DISABLE_RSS":
+        if disabled:
+            if scheduler.running:
+                scheduler.shutdown(wait=False)
+                LOGGER.info("RSS Scheduler stopped via Module Settings")
+        else:
+            if not scheduler.running:
+                try:
+                    scheduler.start()
+                    LOGGER.info("RSS Scheduler started via Module Settings")
+                except Exception:
+                    pass
+    elif key == "DISABLE_PLUGINS":
+        from ..core.plugin_manager import get_plugin_manager
+
+        manager = get_plugin_manager()
+        if disabled:
+            await manager.unload_all()
+            LOGGER.info("Plugins unloaded via Module Settings")
+        else:
+            await manager.boot()
+            LOGGER.info("Plugins loaded via Module Settings")
+
+
+@new_task
+async def show_var_value(_, query, key):
+    if key in ("SEEDR_API_TOKEN", "SEEDR_PASSWORD", "PROWLARR_API_KEY"):
+        value = seedr_display_value(key, Config.get(key)).capitalize()
+        return await query.answer(value, show_alert=True)
+    value = f"{Config.get(key)}"
+    if value == "":
+        value = "None"
+    if len(value) > 200:
+        await query.answer()
+        with BytesIO(str.encode(value)) as out_file:
+            out_file.name = f"{key}.txt"
+            await send_file(query.message, out_file)
+    else:
+        await query.answer(value, show_alert=True)
+
+
+@new_task
 async def edit_aria(_, message, pre_message, key):
     handler_dict[message.chat.id] = False
     value = message.text
-    if key == 'newkey':
-        key, value = [x.strip() for x in value.split(':', 1)]
-    elif value.lower() == 'true':
+    if key == "newkey":
+        key, value = [x.strip() for x in value.split(":", 1)]
+    elif value.lower() == "true":
         value = "true"
-    elif value.lower() == 'false':
+    elif value.lower() == "false":
         value = "false"
-    if key in aria2c_global:
-        await sync_to_async(aria2.set_global_options, {key: value})
-    else:
-        downloads = await sync_to_async(aria2.get_downloads)
-        for download in downloads:
-            if not download.is_complete:
-                try:
-                    await sync_to_async(aria2.client.change_option, download.gid, {key: value})
-                except Exception as e:
-                    LOGGER.error(e)
-    aria2_options[key] = value
-    await update_buttons(pre_message, 'aria')
-    await message.delete()
-    if DATABASE_URL:
-        await DbManger().update_aria2(key, value)
+    await TorrentManager.change_aria2_option(key, value)
+    await update_buttons(pre_message, "aria")
+    await delete_message(message)
+    await database.update_aria2(key, value)
 
 
+@new_task
 async def edit_qbit(_, message, pre_message, key):
     handler_dict[message.chat.id] = False
     value = message.text
-    if value.lower() == 'true':
+    if value.lower() == "true":
         value = True
-    elif value.lower() == 'false':
+    elif value.lower() == "false":
         value = False
-    elif key == 'max_ratio':
+    elif key == "max_ratio":
         value = float(value)
     elif value.isdigit():
         value = int(value)
-    await sync_to_async(get_client().app_set_preferences, {key: value})
+    await TorrentManager.qbittorrent.app.set_preferences({key: value})
     qbit_options[key] = value
-    await update_buttons(pre_message, 'qbit')
-    await message.delete()
-    if DATABASE_URL:
-        await DbManger().update_qbittorrent(key, value)
+    await update_buttons(pre_message, "qbit")
+    await delete_message(message)
+    await database.update_qbittorrent(key, value)
 
 
-async def update_private_file(_, message, pre_message):
+@new_task
+async def edit_nzb(_, message, pre_message, key):
+    handler_dict[message.chat.id] = False
+    value = message.text
+    if value.isdigit():
+        value = int(value)
+    elif value.startswith("[") and value.endswith("]"):
+        try:
+            parsed = literal_eval(value)
+            if not isinstance(parsed, (list, tuple)):
+                raise ValueError("Expected a list")
+            value = ",".join(str(x) for x in parsed)
+        except Exception as e:
+            LOGGER.error(e)
+            await update_buttons(pre_message, "nzb")
+            return
+    res = await sabnzbd_client.set_config("misc", key, value)
+    nzb_options[key] = res["config"]["misc"][key]
+    await update_buttons(pre_message, "nzb")
+    await delete_message(message)
+    await database.update_nzb_config()
+
+
+REQUIRED_SERVER_FIELDS = ["name", "host", "username", "password"]
+
+
+@new_task
+async def edit_nzb_server(_, message, pre_message, key, index=0):
+    handler_dict[message.chat.id] = False
+    value = message.text.strip()
+    if key == "newser":
+        if not (value.startswith("{") and value.endswith("}")):
+            await send_message(message, "Invalid dict format!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        try:
+            value = literal_eval(value)
+        except Exception:
+            await send_message(message, "Invalid dict format!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        if not isinstance(value, dict):
+            await send_message(message, "Must be a dict!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        missing = [f for f in REQUIRED_SERVER_FIELDS if not value.get(f)]
+        if missing:
+            await send_message(
+                message, f"Missing required field(s): {', '.join(missing)}"
+            )
+            await update_buttons(pre_message, "nzbserver")
+            return
+        if not isinstance(value.get("port"), int) or value["port"] < 0:
+            await send_message(message, "port must be a positive integer!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        if not isinstance(value.get("connections"), int) or value["connections"] < 0:
+            await send_message(message, "connections must be a positive integer!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        if value.get("port") <= 0:
+            await send_message(message, "port must be greater than 0!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        if value.get("connections") <= 0:
+            await send_message(message, "connections must be greater than 0!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        res = await sabnzbd_client.add_server(value)
+        if not isinstance(res, dict) or not res.get("config", {}).get("servers", [{}])[
+            0
+        ].get("host"):
+            await send_message(message, "Invalid server!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        Config.USENET_SERVERS.append(value)
+        await update_buttons(pre_message, "nzbserver")
+    else:
+        servers = (
+            Config.USENET_SERVERS if isinstance(Config.USENET_SERVERS, list) else []
+        )
+        if (
+            not servers
+            or index >= len(servers)
+            or not isinstance(servers[index], dict)
+            or key not in servers[index]
+        ):
+            await send_message(message, "Invalid server or key!")
+            await update_buttons(pre_message, "nzbserver")
+            return
+        if value.isdigit():
+            value = int(value)
+        if key in ("port", "connections") and (
+            not isinstance(value, int) or value <= 0
+        ):
+            await send_message(message, f"{key} must be a positive integer!")
+            await update_buttons(pre_message, f"nzbser{index}")
+            return
+        if key in ("timeout", "retention", "priority") and not isinstance(value, int):
+            await send_message(message, f"{key} must be an integer!")
+            await update_buttons(pre_message, f"nzbser{index}")
+            return
+        res = await sabnzbd_client.add_server(
+            {"name": servers[index]["name"], key: value}
+        )
+        if not isinstance(res, dict) or not res.get("config", {}).get("servers", [{}])[
+            0
+        ].get(key):
+            await send_message(message, "Invalid value")
+            return
+        servers[index][key] = value
+        await update_buttons(pre_message, f"nzbser{index}")
+    await delete_message(message)
+    await database.update_config({"USENET_SERVERS": Config.USENET_SERVERS})
+
+
+async def sync_jdownloader():
+    async with jd_listener_lock:
+        if not Config.DATABASE_URL or not jdownloader.is_connected:
+            return
+        await jdownloader.device.system.exit_jd()
+    if await aiopath.exists("cfg.zip"):
+        await remove("cfg.zip")
+    await cmd_exec(["7z", "a", "cfg.zip", "/JDownloader/cfg"])
+    await database.update_private_file("cfg.zip")
+
+
+@new_task
+async def update_private_file(_, message, pre_message, key, new_file=False):
     handler_dict[message.chat.id] = False
     if not message.media and (file_name := message.text):
-        fn = file_name.rsplit('.zip', 1)[0]
-        if await aiopath.isfile(fn) and file_name != 'config.env':
-            await remove(fn)
-        if fn == 'accounts':
-            if await aiopath.exists('accounts'):
-                await aiormtree('accounts')
-            if await aiopath.exists('rclone_sa'):
-                await aiormtree('rclone_sa')
-            config_dict['USE_SERVICE_ACCOUNTS'] = False
-            if DATABASE_URL:
-                await DbManger().update_config({'USE_SERVICE_ACCOUNTS': False})
-        elif file_name in ['.netrc', 'netrc']:
-            await (await create_subprocess_exec("touch", ".netrc")).wait()
-            await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
-            await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
-        elif file_name in ['buttons.txt', 'buttons']:
-            extra_buttons.clear()
-        await message.delete()
+        if new_file:
+            file_name, content = file_name.split("\n", 1)
+            file_name = file_name.strip()
+            async with aiopen(file_name, "w") as f:
+                await f.write(content.strip())
+        else:
+            if await aiopath.isfile(file_name) and file_name != "config.py":
+                await remove(file_name)
+            if file_name == "accounts.zip":
+                if await aiopath.exists("accounts"):
+                    await rmtree("accounts", ignore_errors=True)
+                if await aiopath.exists("rclone_sa"):
+                    await rmtree("rclone_sa", ignore_errors=True)
+                Config.USE_SERVICE_ACCOUNTS = False
+                await database.update_config({"USE_SERVICE_ACCOUNTS": False})
+            elif file_name in [".netrc", "netrc"]:
+                await cmd_exec(["touch", ".netrc"])
+                await cmd_exec(["chmod", "600", ".netrc"])
+                await cmd_exec(["cp", ".netrc", "/root/.netrc"])
+        await delete_message(message)
     elif doc := message.document:
         file_name = doc.file_name
-        await message.download(file_name=f'{getcwd()}/{file_name}')
-        if file_name == 'accounts.zip':
-            if await aiopath.exists('accounts'):
-                await aiormtree('accounts')
-            if await aiopath.exists('rclone_sa'):
-                await aiormtree('rclone_sa')
-            await (await create_subprocess_exec("7z", "x", "-o.", "-aoa", "accounts.zip", "accounts/*.json")).wait()
-            await (await create_subprocess_exec("chmod", "-R", "777", "accounts")).wait()
-        elif file_name == 'list_drives.txt':
-            DRIVES_IDS.clear()
-            DRIVES_NAMES.clear()
-            INDEX_URLS.clear()
-            if GDRIVE_ID := config_dict['GDRIVE_ID']:
-                DRIVES_NAMES.append("Main")
-                DRIVES_IDS.append(GDRIVE_ID)
-                INDEX_URLS.append(config_dict['INDEX_URL'])
-            async with aiopen('list_drives.txt', 'r+') as f:
-                lines = await f.readlines()
-                for line in lines:
-                    temp = line.strip().split()
-                    DRIVES_IDS.append(temp[1])
-                    DRIVES_NAMES.append(temp[0].replace("_", " "))
-                    if len(temp) > 2:
-                        INDEX_URLS.append(temp[2])
-                    else:
-                        INDEX_URLS.append('')
-        elif file_name == 'buttons.txt':
-            extra_buttons.clear()
-            async with aiopen('buttons.txt', 'r+') as f:
-                lines = await f.readlines()
-                for line in lines:
-                    temp = line.strip().split()
-                    if len(extra_buttons.keys()) == 4:
-                        break
-                    if len(temp) == 2:
-                        extra_buttons[temp[0].replace("_", " ")] = temp[1]
-        elif file_name == 'shorteners.txt':
-            shorteneres_list.clear()
-            async with aiopen('shorteners.txt', 'r+') as f:
-                lines = await f.readlines()
-                for line in lines:
-                    temp = line.strip().split()
-                    if len(temp) == 2:
-                        shorteneres_list.append({'domain': temp[0],'api_key': temp[1]})
-        elif file_name in ['.netrc', 'netrc']:
-            if file_name == 'netrc':
-                await rename('netrc', '.netrc')
-                file_name = '.netrc'
-            await (await create_subprocess_exec("chmod", "600", ".netrc")).wait()
-            await (await create_subprocess_exec("cp", ".netrc", "/root/.netrc")).wait()
-        elif file_name == 'config.env':
-            load_dotenv('config.env', override=True)
+        fpath = f"{getcwd()}/{file_name}"
+        if await aiopath.exists(fpath):
+            await remove(fpath)
+        await message.download(file_name=fpath)
+        if file_name == "accounts.zip":
+            if await aiopath.exists("accounts"):
+                await rmtree("accounts", ignore_errors=True)
+            if await aiopath.exists("rclone_sa"):
+                await rmtree("rclone_sa", ignore_errors=True)
+            await cmd_exec(
+                ["7z", "x", "-o.", "-aoa", "accounts.zip", "accounts/*.json"]
+            )
+            await cmd_exec(["chmod", "-R", "777", "accounts"])
+            if await aiopath.exists("accounts"):
+                Config.USE_SERVICE_ACCOUNTS = True
+                await database.update_config({"USE_SERVICE_ACCOUNTS": True})
+        elif file_name in [".netrc", "netrc"]:
+            if file_name == "netrc":
+                await rename("netrc", ".netrc")
+                file_name = ".netrc"
+            await cmd_exec(["chmod", "600", ".netrc"])
+            await cmd_exec(["cp", ".netrc", "/root/.netrc"])
+        elif file_name == "config.py":
             await load_config()
-        if '@github.com' in config_dict['UPSTREAM_REPO']:
+        if "@github.com" in Config.UPSTREAM_REPO:
             buttons = ButtonMaker()
-            msg = 'Push to UPSTREAM_REPO ?'
-            buttons.ibutton('Yes!', f"botset push {file_name}")
-            buttons.ibutton('No', "botset close")
-            await sendMessage(message, msg, buttons.build_menu(2))
+            msg = "Push to UPSTREAM_REPO ?"
+            buttons.data_button(
+                "Yes!", f"botset push {file_name}", style=ButtonStyle.SUCCESS
+            )
+            buttons.data_button("No", "botset close", style=ButtonStyle.DANGER)
+            await send_message(message, msg, buttons.build_menu(2))
         else:
-            await message.delete()
-    if file_name == 'rclone.conf':
+            await delete_message(message)
+    if file_name == "rclone.conf":
         await rclone_serve_booter()
-    await update_buttons(pre_message)
-    if DATABASE_URL:
-        await DbManger().update_private_file(file_name)
-    if await aiopath.exists('accounts.zip'):
-        await remove('accounts.zip')
+    elif file_name == "list_drives.txt" and await aiopath.exists("list_drives.txt"):
+        drives_ids.clear()
+        drives_names.clear()
+        index_urls.clear()
+        if Config.GDRIVE_ID:
+            drives_names.append("Main")
+            drives_ids.append(Config.GDRIVE_ID)
+            index_urls.append(Config.INDEX_URL)
+        async with aiopen("list_drives.txt", "r+") as f:
+            lines = await f.readlines()
+            for line in lines:
+                temp = line.strip().split()
+                drives_ids.append(temp[1])
+                drives_names.append(temp[0].replace("_", " "))
+                if len(temp) > 2:
+                    index_urls.append(temp[2])
+                else:
+                    index_urls.append("")
+    elif file_name == "shortener.txt" and await aiopath.exists("shortener.txt"):
+        async with aiopen("shortener.txt", "r+") as f:
+            lines = await f.readlines()
+            for line in lines:
+                temp = line.strip().split()
+                if len(temp) == 2:
+                    shortener_dict[temp[0]] = temp[1]
+    elif file_name == "categories.txt" and await aiopath.exists("categories.txt"):
+        categories_dict.clear()
+        if Config.GDRIVE_ID:
+            categories_dict["Root"] = {
+                "drive_id": Config.GDRIVE_ID,
+                "index_link": Config.INDEX_URL,
+            }
+        async with aiopen("categories.txt", "r+") as f:
+            lines = await f.readlines()
+            for line in lines:
+                sep = 2 if line.strip().split()[-1].startswith("http") else 1
+                temp = line.strip().rsplit(maxsplit=sep)
+                name = "Root Custom" if temp[0].casefold() == "Root" else temp[0]
+                categories_dict[name] = {
+                    "drive_id": temp[1],
+                    "index_link": (temp[2] if sep == 2 else ""),
+                }
+    await update_buttons(pre_message, key)
+    await database.update_private_file(file_name)
 
 
 async def event_handler(client, query, pfunc, rfunc, document=False):
     chat_id = query.message.chat.id
     handler_dict[chat_id] = True
-    start_time = time()
+    start_time = update_time = time()
 
     async def event_filter(_, __, event):
         user = event.from_user or event.sender_chat
-        return bool(user.id == query.from_user.id and event.chat.id == chat_id and (event.text or event.document and document))
-    handler = client.add_handler(MessageHandler(
-        pfunc, filters=create(event_filter)), group=-1)
+        return bool(
+            user.id == query.from_user.id
+            and event.chat.id == chat_id
+            and (event.text or event.document and document)
+        )
+
+    handler = client.add_handler(
+        MessageHandler(pfunc, filters=create(event_filter)), group=-1
+    )
     while handler_dict[chat_id]:
         await sleep(0.5)
+
         if time() - start_time > 60:
             handler_dict[chat_id] = False
             await rfunc()
+        elif time() - update_time > 8 and handler_dict[chat_id]:
+            update_time = time()
+            msg = await client.get_messages(chat_id, query.message.id)
+            text = msg.text.split("\n")
+            text[-1] = (
+                f"┖ <b>Time Left :</b> <code>{round(60 - (time() - start_time), 2)} sec</code>"
+            )
+            await edit_message(msg, "\n".join(text), msg.reply_markup)
     client.remove_handler(*handler)
 
 
-@new_thread
+@new_task
 async def edit_bot_settings(client, query):
     data = query.data.split()
     message = query.message
-    if data[1] == 'close':
-        handler_dict[message.chat.id] = False
+    handler_dict[message.chat.id] = False
+    if data[1] == "close":
         await query.answer()
-        await message.delete()
-        await message.reply_to_message.delete()
-    elif data[1] == 'back':
-        handler_dict[message.chat.id] = False
+        await delete_message(message.reply_to_message)
+        await delete_message(message)
+    elif data[1] == "back":
         await query.answer()
         key = data[2] if len(data) == 3 else None
         if key is None:
-            globals()['START'] = 0
+            globals()["start"] = 0
         await update_buttons(message, key)
-    elif data[1] in ['var', 'aria', 'qbit']:
+    elif data[1] == "syncjd":
+        if not Config.JD_EMAIL or not Config.JD_PASS:
+            await query.answer(
+                "No Email or Password provided!",
+                show_alert=True,
+            )
+            return
+        await query.answer(
+            "Synchronization Started. JDownloader will get restarted. It takes up to 10 sec!",
+            show_alert=True,
+        )
+        await sync_jdownloader()
+    elif data[1] in [
+        "var",
+        "seedr",
+        "aria",
+        "qbit",
+        "nzb",
+        "nzbserver",
+        "setonoff",
+        "settoggle",
+        "setlimit",
+    ] or data[
+        1
+    ].startswith("nzbser"):
+        if data[1] in ("nzbserver", "setlimit"):
+            globals()["start"] = 0
         await query.answer()
         await update_buttons(message, data[1])
-    elif data[1] == 'resetvar':
-        handler_dict[message.chat.id] = False
-        await query.answer('Reset Done!', show_alert=True)
-        value = ''
-        if data[2] in default_values:
-            value = default_values[data[2]]
-            if data[2] == "STATUS_UPDATE_INTERVAL" and len(download_dict) != 0:
-                async with status_reply_dict_lock:
-                    if Interval:
-                        Interval[0].cancel()
-                        Interval.clear()
-                        Interval.append(setInterval(
-                            value, update_all_messages))
-        elif data[2] == 'EXTENSION_FILTER':
-            GLOBAL_EXTENSION_FILTER.clear()
-            GLOBAL_EXTENSION_FILTER.append('.aria2')
-        elif data[2] == 'TORRENT_TIMEOUT':
-            downloads = await sync_to_async(aria2.get_downloads)
-            for download in downloads:
-                if not download.is_complete:
-                    try:
-                        await sync_to_async(aria2.client.change_option, download.gid, {'bt-stop-timeout': '0'})
-                    except Exception as e:
-                        LOGGER.error(e)
-            aria2_options['bt-stop-timeout'] = '0'
-            if DATABASE_URL:
-                await DbManger().update_aria2('bt-stop-timeout', '0')
-        elif data[2] == 'BASE_URL':
-            await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
-        elif data[2] == 'BASE_URL_PORT':
-            value = 80
-            if config_dict['BASE_URL']:
-                await (await create_subprocess_exec("pkill", "-9", "-f", "gunicorn")).wait()
-                await create_subprocess_shell("gunicorn web.wserver:app --bind 0.0.0.0:80 --worker-class gevent")
-        elif data[2] == 'GDRIVE_ID':
-            if DRIVES_NAMES and DRIVES_NAMES[0] == 'Main':
-                DRIVES_NAMES.pop(0)
-                DRIVES_IDS.pop(0)
-                INDEX_URLS.pop(0)
-        elif data[2] == 'INDEX_URL':
-            if DRIVES_NAMES and DRIVES_NAMES[0] == 'Main':
-                INDEX_URLS[0] = ''
-        elif data[2] == 'INCOMPLETE_TASK_NOTIFIER' and DATABASE_URL:
-            await DbManger().trunc_table('tasks')
-        config_dict[data[2]] = value
-        await update_buttons(message, data[2], 'editvar', False)
-        if DATABASE_URL:
-            await DbManger().update_config({data[2]: value})
-        if data[2] in ['SEARCH_PLUGINS', 'SEARCH_API_LINK']:
+    elif data[1] == "resetvar":
+        await query.answer()
+        value = DEFAULT_CONFIG.get(data[2], "")
+        if data[2] in (
+            "IMAGES",
+            "SEARCH_PLUGINS",
+            "USENET_SERVERS",
+            "YT_TAGS",
+            "IMG_SOURCES",
+        ):
+            value = []
+        elif data[2] in DEFAULT_VALUES:
+            value = DEFAULT_VALUES[data[2]]
+            if (
+                data[2] == "STATUS_UPDATE_INTERVAL"
+                and len(task_dict) != 0
+                and (st := intervals["status"])
+            ):
+                for key, intvl in list(st.items()):
+                    intvl.cancel()
+                    intervals["status"][key] = SetInterval(
+                        value, update_status_message, key
+                    )
+        elif data[2] == "RSS_SIZE_LIMIT":
+            value = 0
+        elif data[2] == "EXCLUDED_EXTENSIONS":
+            excluded_extensions.clear()
+            excluded_extensions.extend(["aria2", "!qB"])
+        elif data[2] == "TORRENT_TIMEOUT":
+            await TorrentManager.change_aria2_option("bt-stop-timeout", "0")
+            await database.update_aria2("bt-stop-timeout", "0")
+        elif data[2] in ("BASE_URL", "WEB_ACCESS_PASSWORD"):
+            await cmd_exec(["pkill", "-9", "-f", "gunicorn"])
+        elif data[2] == "GDRIVE_ID":
+            if drives_names and drives_names[0] == "Main":
+                drives_names.pop(0)
+                drives_ids.pop(0)
+                index_urls.pop(0)
+        elif data[2] == "INDEX_URL":
+            if drives_names and drives_names[0] == "Main":
+                index_urls[0] = ""
+        elif data[2] in ("INC_TASK_NOTIFY", "INC_TASK_RESUME"):
+            await database.trunc_table("tasks")
+        elif data[2] in ("JD_EMAIL", "JD_PASS"):
+            await cmd_exec(["pkill", "-9", "-f", "java"])
+        elif data[2] == "USENET_SERVERS":
+            for s in (
+                Config.USENET_SERVERS if isinstance(Config.USENET_SERVERS, list) else []
+            ):
+                if isinstance(s, dict):
+                    await sabnzbd_client.delete_config("servers", s.get("name", ""))
+        elif data[2] == "AUTHORIZED_CHATS":
+            auth_chats.clear()
+        elif data[2] == "SUDO_USERS":
+            sudo_users.clear()
+        Config.set(data[2], value)
+        await update_buttons(message, data[2], "editvar", False)
+        if data[2] == "DATABASE_URL":
+            await database.disconnect()
+        await database.update_config({data[2]: value})
+        if data[2] in ("SEARCH_PLUGINS", "SEARCH_API_LINK"):
             await initiate_search_tools()
-        elif data[2] in ['QUEUE_ALL', 'QUEUE_DOWNLOAD', 'QUEUE_UPLOAD']:
+        elif data[2] in ("QUEUE_ALL", "QUEUE_DOWNLOAD", "QUEUE_UPLOAD"):
             await start_from_queued()
-        elif data[2] in ['RCLONE_SERVE_URL', 'RCLONE_SERVE_PORT', 'RCLONE_SERVE_USER', 'RCLONE_SERVE_PASS']:
+        elif data[2] in (
+            "RCLONE_SERVE_URL",
+            "RCLONE_SERVE_PORT",
+            "RCLONE_SERVE_USER",
+            "RCLONE_SERVE_PASS",
+        ):
             await rclone_serve_booter()
-    elif data[1] == 'resetaria':
-        handler_dict[message.chat.id] = False
-        aria2_defaults = await sync_to_async(aria2.client.get_global_option)
-        if aria2_defaults[data[2]] == aria2_options[data[2]]:
-            await query.answer('Value already same as you added in aria.sh!')
+    elif data[1] == "resetnzb":
+        await query.answer()
+        res = await sabnzbd_client.set_config_default(data[2])
+        nzb_options[data[2]] = res["config"]["misc"][data[2]]
+        await update_buttons(message, "nzb")
+        await database.update_nzb_config()
+    elif data[1] == "syncnzb":
+        if not Config.USENET_SERVERS:
+            return await query.answer(
+                "Synchronization Paused. No USENET_SERVERS is provided !"
+            )
+        await query.answer(
+            "Synchronization Started. It takes up to 2 sec!", show_alert=True
+        )
+        nzb_options.clear()
+        await update_nzb_options()
+        await database.update_nzb_config()
+    elif data[1] == "syncqbit":
+        await query.answer(
+            "Synchronization Started. It takes up to 2 sec!", show_alert=True
+        )
+        qbit_options.clear()
+        await update_qb_options()
+        await database.save_qbit_settings()
+    elif data[1] == "emptyaria":
+        await query.answer()
+        aria2_options[data[2]] = ""
+        await update_buttons(message, "aria")
+        await TorrentManager.change_aria2_option(data[2], "")
+        await database.update_aria2(data[2], "")
+    elif data[1] == "emptyqbit":
+        await query.answer()
+        await TorrentManager.qbittorrent.app.set_preferences({data[2]: ""})
+        qbit_options[data[2]] = ""
+        await update_buttons(message, "qbit")
+        await database.update_qbittorrent(data[2], "")
+    elif data[1] == "emptynzb":
+        await query.answer()
+        res = await sabnzbd_client.set_config("misc", data[2], "")
+        nzb_options[data[2]] = res["config"]["misc"][data[2]]
+        await update_buttons(message, "nzb")
+        await database.update_nzb_config()
+    elif data[1] == "remser":
+        index = int(data[2])
+        servers = (
+            Config.USENET_SERVERS if isinstance(Config.USENET_SERVERS, list) else []
+        )
+        if index >= len(servers) or not isinstance(servers[index], dict):
+            await query.answer("Invalid server!", show_alert=True)
             return
+        await sabnzbd_client.delete_config("servers", servers[index].get("name", ""))
+        del Config.USENET_SERVERS[index]
+        await update_buttons(message, "nzbserver")
+        await database.update_config({"USENET_SERVERS": Config.USENET_SERVERS})
+    elif data[1] == "private":
         await query.answer()
-        value = aria2_defaults[data[2]]
-        aria2_options[data[2]] = value
-        await update_buttons(message, 'aria')
-        downloads = await sync_to_async(aria2.get_downloads)
-        for download in downloads:
-            if not download.is_complete:
-                try:
-                    await sync_to_async(aria2.client.change_option, download.gid, {data[2]: value})
-                except Exception as e:
-                    LOGGER.error(e)
-        if DATABASE_URL:
-            await DbManger().update_aria2(data[2], value)
-    elif data[1] == 'emptyaria':
-        handler_dict[message.chat.id] = False
+        if data[2] in ("open", "stop"):
+            await update_buttons(message, data[1])
+        elif data[2] in ("edit", "new"):
+            await update_buttons(message, data[1], edit_mode=True)
+            pfunc = partial(
+                update_private_file,
+                pre_message=message,
+                key=data[1],
+                new_file=data[2] == "new",
+            )
+            rfunc = partial(update_buttons, message, data[1])
+            await event_handler(client, query, pfunc, rfunc, True)
+    elif data[1] == "editvar":
         await query.answer()
-        aria2_options[data[2]] = ''
-        await update_buttons(message, 'aria')
-        downloads = await sync_to_async(aria2.get_downloads)
-        for download in downloads:
-            if not download.is_complete:
-                try:
-                    await sync_to_async(aria2.client.change_option, download.gid, {data[2]: ''})
-                except Exception as e:
-                    LOGGER.error(e)
-        if DATABASE_URL:
-            await DbManger().update_aria2(data[2], '')
-    elif data[1] == 'emptyqbit':
-        handler_dict[message.chat.id] = False
+        key = data[2]
+        edit_mode = len(data) > 3 and data[3] == "edit"
+        if edit_mode:
+            await update_buttons(message, key, "editvar", True)
+            pfunc = partial(edit_variable, pre_message=message, key=key)
+            rfunc = partial(update_buttons, message, key, "editvar", False)
+            await event_handler(client, query, pfunc, rfunc)
+        else:
+            await update_buttons(message, key, "editvar", False)
+    elif data[1] == "boolvar":
         await query.answer()
-        await sync_to_async(get_client().app_set_preferences, {data[2]: value})
-        qbit_options[data[2]] = ''
-        await update_buttons(message, 'qbit')
-        if DATABASE_URL:
-            await DbManger().update_qbittorrent(data[2], '')
-    elif data[1] == 'private':
-        handler_dict[message.chat.id] = False
+        key = data[2]
+        value = data[3]
+        await toggle_bool_var(client, query, message, key, value)
+    elif data[1] == "toggleonoff":
         await query.answer()
-        await update_buttons(message, data[1])
-        pfunc = partial(update_private_file, pre_message=message)
-        rfunc = partial(update_buttons, message)
-        await event_handler(client, query, pfunc, rfunc, True)
-    elif data[1] == 'boolvar':
-        handler_dict[message.chat.id] = False
-        value = data[3] == "on"
-        await query.answer(f'Successfully Var changed to {value}!', show_alert=True)
-        config_dict[data[2]] = value
-        if not value and data[2] == 'INCOMPLETE_TASK_NOTIFIER' and DATABASE_URL:
-            await DbManger().trunc_table('tasks')
-        await update_buttons(message, data[2], 'editvar', False)
-        if DATABASE_URL:
-            await DbManger().update_config({data[2]: value})
-    elif data[1] == 'editvar':
-        handler_dict[message.chat.id] = False
-        await query.answer()
-        edit_mode = len(data) == 4
-        await update_buttons(message, data[2], data[1], edit_mode)
-        if data[2] in bool_vars or not edit_mode:
-            return
-        pfunc = partial(edit_variable, pre_message=message, key=data[2])
-        rfunc = partial(update_buttons, message, data[2], data[1], edit_mode)
-        await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == 'showvar':
-        value = config_dict[data[2]]
-        if len(str(value)) > 200:
-            await query.answer()
-            with BytesIO(str.encode(value)) as out_file:
-                out_file.name = f"{data[2]}.txt"
-                await sendFile(message, out_file)
-            return
-        elif value == '':
-            value = None
-        await query.answer(f'{value}', show_alert=True)
-    elif data[1] == 'editaria' and (STATE == 'edit' or data[2] == 'newkey'):
-        handler_dict[message.chat.id] = False
+        key = data[2]
+        value = data[3]
+        await toggle_onoff_var(client, query, message, key, value)
+    elif data[1] == "showvar":
+        key = data[2]
+        await show_var_value(client, query, key)
+    elif data[1] == "ariavar" and (state == "edit" or data[2] == "newkey"):
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_aria, pre_message=message, key=data[2])
-        rfunc = partial(update_buttons, message, 'aria')
+        rfunc = partial(update_buttons, message, "aria")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == 'editaria' and STATE == 'view':
-        value = aria2_options[data[2]]
-        if len(str(value)) > 200:
+    elif data[1] == "ariavar" and state == "view":
+        value = f"{aria2_options[data[2]]}"
+        if len(value) > 200:
             await query.answer()
             with BytesIO(str.encode(value)) as out_file:
                 out_file.name = f"{data[2]}.txt"
-                await sendFile(message, out_file)
+                await send_file(message, out_file)
             return
-        elif value == '':
+        elif value == "":
             value = None
-        await query.answer(f'{value}', show_alert=True)
-    elif data[1] == 'editqbit' and STATE == 'edit':
-        handler_dict[message.chat.id] = False
+        await query.answer(f"{value}", show_alert=True)
+    elif data[1] == "qbitvar" and state == "edit":
         await query.answer()
         await update_buttons(message, data[2], data[1])
         pfunc = partial(edit_qbit, pre_message=message, key=data[2])
-        rfunc = partial(update_buttons, message, 'var')
+        rfunc = partial(update_buttons, message, "qbit")
         await event_handler(client, query, pfunc, rfunc)
-    elif data[1] == 'editqbit' and STATE == 'view':
-        value = qbit_options[data[2]]
-        if len(str(value)) > 200:
+    elif data[1] == "qbitvar" and state == "view":
+        value = f"{qbit_options[data[2]]}"
+        if len(value) > 200:
             await query.answer()
             with BytesIO(str.encode(value)) as out_file:
                 out_file.name = f"{data[2]}.txt"
-                await sendFile(message, out_file)
+                await send_file(message, out_file)
             return
-        elif value == '':
+        elif value == "":
             value = None
-        await query.answer(f'{value}', show_alert=True)
-    elif data[1] == 'edit':
+        await query.answer(f"{value}", show_alert=True)
+    elif data[1] == "nzbvar" and state == "edit":
         await query.answer()
-        globals()['STATE'] = 'edit'
+        await update_buttons(message, data[2], data[1])
+        pfunc = partial(edit_nzb, pre_message=message, key=data[2])
+        rfunc = partial(update_buttons, message, "nzb")
+        await event_handler(client, query, pfunc, rfunc)
+    elif data[1] == "nzbvar" and state == "view":
+        value = f"{nzb_options[data[2]]}"
+        if len(value) > 200:
+            await query.answer()
+            with BytesIO(str.encode(value)) as out_file:
+                out_file.name = f"{data[2]}.txt"
+                await send_file(message, out_file)
+            return
+        elif value == "":
+            value = None
+        await query.answer(f"{value}", show_alert=True)
+    elif data[1] == "emptyserkey":
+        await query.answer()
+        await update_buttons(message, f"nzbser{data[2]}")
+        index = int(data[2])
+        servers = (
+            Config.USENET_SERVERS if isinstance(Config.USENET_SERVERS, list) else []
+        )
+        if index >= len(servers) or not isinstance(servers[index], dict):
+            return
+        res = await sabnzbd_client.add_server(
+            {"name": servers[index].get("name", ""), data[3]: ""}
+        )
+        if (
+            isinstance(res, dict)
+            and res.get("config", {}).get("servers", [{}])[0].get(data[3]) is not None
+        ):
+            Config.USENET_SERVERS[index][data[3]] = res["config"]["servers"][0][data[3]]
+            await database.update_config({"USENET_SERVERS": Config.USENET_SERVERS})
+    elif data[1].startswith("nzbsevar") and (state == "edit" or data[2] == "newser"):
+        index = 0 if data[2] == "newser" else int(data[1].replace("nzbsevar", ""))
+        await query.answer()
+        await update_buttons(message, data[2], data[1])
+        pfunc = partial(edit_nzb_server, pre_message=message, key=data[2], index=index)
+        rfunc = partial(
+            update_buttons,
+            message,
+            "nzbserver" if data[2] == "newser" else f"nzbser{index}",
+        )
+        await event_handler(client, query, pfunc, rfunc)
+    elif data[1].startswith("nzbsevar") and state == "view":
+        index = int(data[1].replace("nzbsevar", ""))
+        servers = (
+            Config.USENET_SERVERS if isinstance(Config.USENET_SERVERS, list) else []
+        )
+        if (
+            index >= len(servers)
+            or not isinstance(servers[index], dict)
+            or data[2] not in servers[index]
+        ):
+            await query.answer("Invalid server or key!", show_alert=True)
+            return
+        value = f"{servers[index][data[2]]}"
+        if len(value) > 200:
+            await query.answer()
+            with BytesIO(str.encode(value)) as out_file:
+                out_file.name = f"{data[2]}.txt"
+                await send_file(message, out_file)
+            return
+        elif value == "":
+            value = None
+        await query.answer(f"{value}", show_alert=True)
+    elif data[1] == "edit":
+        await query.answer()
+        globals()["state"] = "edit"
         await update_buttons(message, data[2])
-    elif data[1] == 'view':
+    elif data[1] == "view":
         await query.answer()
-        globals()['STATE'] = 'view'
+        globals()["state"] = "view"
         await update_buttons(message, data[2])
-    elif data[1] == 'start':
+    elif data[1] == "start":
         await query.answer()
-        if START != int(data[3]):
-            globals()['START'] = int(data[3])
+        if start != int(data[3]):
+            globals()["start"] = int(data[3])
             await update_buttons(message, data[2])
-    elif data[1] == 'push':
+    elif data[1] == "push":
         await query.answer()
-        filename = data[2].rsplit('.zip', 1)[0]
+        filename = data[2].rsplit(".zip", 1)[0]
+        safe_filename = shlex_quote(filename)
+        safe_branch = shlex_quote(Config.UPSTREAM_BRANCH)
         if await aiopath.exists(filename):
-            await (await create_subprocess_shell(f"git add -f {filename} \
-                                                   && git commit -sm botsettings -q \
-                                                   && git push origin {config_dict['UPSTREAM_BRANCH']} -qf")).wait()
+            await cmd_exec(
+                f"git add -f {safe_filename} && git commit -sm botsettings -q && git push origin {safe_branch} -qf",
+                shell=True,
+            )
         else:
-            await (await create_subprocess_shell(f"git rm -r --cached {filename} \
-                                                   && git commit -sm botsettings -q \
-                                                   && git push origin {config_dict['UPSTREAM_BRANCH']} -qf")).wait()
-        await message.delete()
-        await message.reply_to_message.delete()
+            await cmd_exec(
+                f"git rm -r --cached {safe_filename} && git commit -sm botsettings -q && git push origin {safe_branch} -qf",
+                shell=True,
+            )
+        await delete_message(message.reply_to_message)
+        await delete_message(message)
 
 
-async def bot_settings(_, message):
+@new_task
+async def send_bot_settings(_, message):
+    handler_dict[message.chat.id] = False
     msg, button = await get_buttons()
-    globals()['START'] = 0
-    await sendMessage(message, msg, button, 'IMAGES')
+    globals()["start"] = 0
+    await send_message(message, msg, button)
 
 
-bot.add_handler(MessageHandler(bot_settings, filters=command(
-    BotCommands.BotSetCommand) & CustomFilters.sudo))
-bot.add_handler(CallbackQueryHandler(edit_bot_settings,
-                filters=regex("^botset") & CustomFilters.sudo))
+async def load_config():
+    import importlib
+    import sys
+
+    if "config" in sys.modules:
+        importlib.reload(sys.modules["config"])
+    Config.load()
+    drives_ids.clear()
+    drives_names.clear()
+    index_urls.clear()
+    await update_variables()
+
+    if not await aiopath.exists("accounts"):
+        Config.USE_SERVICE_ACCOUNTS = False
+
+    if len(task_dict) != 0 and (st := intervals["status"]):
+        for key, intvl in list(st.items()):
+            intvl.cancel()
+            intervals["status"][key] = SetInterval(
+                Config.STATUS_UPDATE_INTERVAL, update_status_message, key
+            )
+
+    if Config.TORRENT_TIMEOUT:
+        await TorrentManager.change_aria2_option(
+            "bt-stop-timeout", f"{Config.TORRENT_TIMEOUT}"
+        )
+        await database.update_aria2("bt-stop-timeout", f"{Config.TORRENT_TIMEOUT}")
+
+    if not Config.INC_TASK_NOTIFY and not Config.INC_TASK_RESUME:
+        await database.trunc_table("tasks")
+
+    await cmd_exec(["pkill", "-9", "-f", "gunicorn"])
+    if Config.BASE_URL:
+        port = getenv("PORT", "") or "8080"
+        access_pwd = getenv("WEB_ACCESS_PASSWORD", "") or Config.WEB_ACCESS_PASSWORD
+        if not access_pwd:
+            from secrets import token_bytes
+
+            access_pwd = token_bytes(32).hex()
+            Config.WEB_ACCESS_PASSWORD = access_pwd
+        env = f"WEB_ACCESS_PASSWORD={access_pwd} "
+        bot_loop.create_task(
+            cmd_exec(
+                f"{env}gunicorn -k uvicorn.workers.UvicornWorker -w 1 web.wserver:app --bind 0.0.0.0:{port}",
+                shell=True,
+            )
+        )
+
+    if Config.DATABASE_URL:
+        await database.connect()
+
+        from os import environ
+
+        settings = sys.modules.get("config")
+        config_file = {}
+        if settings:
+            config_file = {
+                k: v.strip() if isinstance(v, str) else v
+                for k, v in vars(settings).items()
+                if not k.startswith("__")
+            }
+        config_file.update({k: environ[k].strip() for k in var_list if k in environ})
+
+        part = db_partition_id((Config.BOT_TOKEN or "").split(":", 1)[0])
+        deploy_filter = {"_id": part}
+
+        old_config = await database.db.settings.deployConfig.find_one(
+            deploy_filter, {"_id": 0}
+        )
+        db_config = (
+            await database.db.settings.config.find_one(deploy_filter, {"_id": 0}) or {}
+        )
+
+        if old_config is None:
+            for k, v in config_file.items():
+                if v is not None:
+                    db_config.setdefault(k, v)
+        elif old_config != config_file:
+            for k, v in config_file.items():
+                if k not in old_config or old_config.get(k) != v:
+                    if v is not None:
+                        db_config[k] = v
+
+        Config.load_dict(db_config)
+        await database.db.settings.deployConfig.replace_one(
+            deploy_filter, config_file, upsert=True
+        )
+        await database.update_config(Config.get_all())
+    else:
+        await database.disconnect()
+    await gather(initiate_search_tools(), start_from_queued(), rclone_serve_booter())
+    add_job()

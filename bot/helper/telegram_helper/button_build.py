@@ -1,48 +1,71 @@
-from pyrogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.types import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+from pyrogram.enums import ButtonStyle
+
+URL_SCHEMES = ("http://", "https://", "tg://")
+
+
+def _btn_style(style=None):
+    return style or ButtonStyle.DEFAULT
+
+
+def valid_url(link):
+    text = str(link or "").strip()
+    if not text.lower().startswith(URL_SCHEMES):
+        return ""
+    rest = text.split("://", 1)[1]
+    if not rest or rest.startswith(("/", "?", "#")):
+        return ""
+    if any(ch.isspace() for ch in text):
+        return ""
+    return text
 
 
 class ButtonMaker:
     def __init__(self):
-        self.__button = []
-        self.__header_button = []
-        self.__footer_button = []
+        self.buttons = {
+            "default": [],
+            "header": [],
+            "f_body": [],
+            "l_body": [],
+            "footer": [],
+        }
 
-    def ubutton(self, key, link, position=None):
-        if not position:
-            self.__button.append(InlineKeyboardButton(text=key, url=link))
-        elif position == 'header':
-            self.__header_button.append(
-                InlineKeyboardButton(text=key, url=link))
-        elif position == 'footer':
-            self.__footer_button.append(
-                InlineKeyboardButton(text=key, url=link))
+    def url_button(self, key, link, position=None, style=None):
+        safe = valid_url(link)
+        if not safe:
+            from ... import LOGGER
 
-    def ibutton(self, key, data, position=None):
-        if not position:
-            self.__button.append(InlineKeyboardButton(
-                text=key, callback_data=data))
-        elif position == 'header':
-            self.__header_button.append(
-                InlineKeyboardButton(text=key, callback_data=data))
-        elif position == 'footer':
-            self.__footer_button.append(
-                InlineKeyboardButton(text=key, callback_data=data))
+            LOGGER.warning(f"dropping button {key!r} with unusable url {link!r}")
+            return
+        self.buttons[position if position in self.buttons else "default"].append(
+            InlineKeyboardButton(text=key, url=safe, style=_btn_style(style))
+        )
 
-    def build_menu(self, b_cols=1, h_cols=8, f_cols=8):
-        menu = [self.__button[i:i+b_cols]
-                for i in range(0, len(self.__button), b_cols)]
-        if self.__header_button:
-            h_cnt = len(self.__header_button)
-            if h_cnt > h_cols:
-                header_buttons = [self.__header_button[i:i+h_cols]
-                                  for i in range(0, len(self.__header_button), h_cols)]
-                menu = header_buttons + menu
-            else:
-                menu.insert(0, self.__header_button)
-        if self.__footer_button:
-            if len(self.__footer_button) > f_cols:
-                [menu.append(self.__footer_button[i:i+f_cols])
-                 for i in range(0, len(self.__footer_button), f_cols)]
-            else:
-                menu.append(self.__footer_button)
+    def web_app_button(self, key, link, position=None, style=None):
+        self.buttons[position if position in self.buttons else "default"].append(
+            InlineKeyboardButton(
+                text=key, web_app=WebAppInfo(url=link), style=_btn_style(style)
+            )
+        )
+
+    def data_button(self, key, data, position=None, style=None):
+        self.buttons[position if position in self.buttons else "default"].append(
+            InlineKeyboardButton(text=key, callback_data=data, style=_btn_style(style))
+        )
+
+    def build_menu(self, b_cols=1, h_cols=8, fb_cols=2, lb_cols=2, f_cols=8):
+        def chunk(lst, n):
+            return [lst[i : i + n] for i in range(0, len(lst), n)]
+
+        menu = chunk(self.buttons["default"], b_cols)
+        menu = (
+            chunk(self.buttons["header"], h_cols) if self.buttons["header"] else []
+        ) + menu
+        for key, cols in (("f_body", fb_cols), ("l_body", lb_cols), ("footer", f_cols)):
+            if self.buttons[key]:
+                menu += chunk(self.buttons[key], cols)
         return InlineKeyboardMarkup(menu)
+
+    def reset(self):
+        for key in self.buttons:
+            self.buttons[key].clear()

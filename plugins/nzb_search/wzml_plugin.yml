@@ -1,0 +1,21 @@
+name: nzb_search
+version: "1.1.0"
+author: WZML-X
+description: Search Usenet indexers through Prowlarr and queue NZB mirrors
+license: MIT
+repository: https://github.com/SilentDemonSD/WZML-X
+tags: [usenet, search, prowlarr]
+min_bot_version: "3.1.9"
+entry: nzb_search.py
+commands:
+  - name: nzbsearch
+    handler: nzbsearch
+    description: "[query] Search Usenet indexers and queue an NZB to Google Drive"
+    usage: "/nzbsearch <query>"
+    aliases: [nzs]
+    access: authorized
+callbacks:
+  - pattern: "^nzbsearch"
+    handler: nzbsearch_result_update
+    description: "Queue a selected NZB search result"
+    access: authorized

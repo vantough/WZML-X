@@ -1,56 +1,56 @@
-#!/usr/bin/env python3
-from string import ascii_letters
-from random import SystemRandom
 from asyncio import sleep
-from telegraph.aio import Telegraph
-from telegraph.exceptions import RetryAfterError
+from secrets import token_hex
 
-from bot import LOGGER, bot_loop, config_dict
+from ... import LOGGER
+from ...core.config_manager import Config
+from .telegraph_utils import Telegraph, RetryAfterError
 
 
 class TelegraphHelper:
     def __init__(self, author_name=None, author_url=None):
-        self.telegraph = Telegraph(domain='graph.org')
-        self.short_name = ''.join(SystemRandom().choices(ascii_letters, k=8))
-        self.access_token = None
-        self.author_name = author_name
-        self.author_url = author_url
+        self._telegraph = Telegraph(domain="graph.org")
+        self._author_name = author_name
+        self._author_url = author_url
 
     async def create_account(self):
-        await self.telegraph.create_account(
-            short_name=self.short_name,
-            author_name=self.author_name,
-            author_url=self.author_url
-        )
-        self.access_token = self.telegraph.get_access_token()
         LOGGER.info("Creating Telegraph Account")
+        try:
+            await self._telegraph.create_account(
+                short_name=token_hex(5),
+                author_name=self._author_name,
+                author_url=self._author_url,
+            )
+        except Exception as e:
+            LOGGER.error(f"Failed to create Telegraph Account: {e}")
 
     async def create_page(self, title, content):
         try:
-            return await self.telegraph.create_page(
+            return await self._telegraph.create_page(
                 title=title,
-                author_name=self.author_name,
-                author_url=self.author_url,
-                html_content=content
+                author_name=self._author_name,
+                author_url=self._author_url,
+                html_content=content,
             )
         except RetryAfterError as st:
             LOGGER.warning(
-                f'Telegraph Flood control exceeded. I will sleep for {st.retry_after} seconds.')
+                f"Telegraph Flood control exceeded. I will sleep for {st.retry_after} seconds."
+            )
             await sleep(st.retry_after)
             return await self.create_page(title, content)
 
     async def edit_page(self, path, title, content):
         try:
-            return await self.telegraph.edit_page(
+            return await self._telegraph.edit_page(
                 path=path,
                 title=title,
-                author_name=self.author_name,
-                author_url=self.author_url,
-                html_content=content
+                author_name=self._author_name,
+                author_url=self._author_url,
+                html_content=content,
             )
         except RetryAfterError as st:
             LOGGER.warning(
-                f'Telegraph Flood control exceeded. I will sleep for {st.retry_after} seconds.')
+                f"Telegraph Flood control exceeded. I will sleep for {st.retry_after} seconds."
+            )
             await sleep(st.retry_after)
             return await self.edit_page(path, title, content)
 
@@ -60,7 +60,9 @@ class TelegraphHelper:
         num_of_path = len(path)
         for content in telegraph_content:
             if nxt_page == 1:
-                content += f'<b><a href="https://telegra.ph/{path[nxt_page]}">Next</a></b>'
+                content += (
+                    f'<b><a href="https://telegra.ph/{path[nxt_page]}">Next</a></b>'
+                )
                 nxt_page += 1
             else:
                 if prev_page <= num_of_path:
@@ -71,13 +73,10 @@ class TelegraphHelper:
                     nxt_page += 1
             await self.edit_page(
                 path=path[prev_page],
-                title=f"{config_dict['TITLE_NAME']} Torrent Search",
-                content=content
+                title="WZML-X Torrent Search",
+                content=content,
             )
         return
 
 
-telegraph = TelegraphHelper(config_dict['AUTHOR_NAME'],
-                            config_dict['AUTHOR_URL'])
-
-bot_loop.run_until_complete(telegraph.create_account())
+telegraph = TelegraphHelper(Config.AUTHOR_NAME, Config.AUTHOR_URL)

@@ -1,77 +1,198 @@
-from logging import FileHandler, StreamHandler, INFO, basicConfig, error as log_error, info as log_info
-from os import path as ospath, environ, remove
+from asyncio import run
+from hashlib import sha256
+from importlib import import_module
+from logging import ERROR, INFO, FileHandler, StreamHandler, basicConfig, getLogger
+from os import environ, path, remove
+from os.path import isdir
+from shutil import rmtree
+from subprocess import call as scall
 from subprocess import run as srun
-from requests import get as rget
-from dotenv import load_dotenv, dotenv_values
-from pymongo import MongoClient
+from sys import exit
 
-if ospath.exists('log.txt'):
-    with open('log.txt', 'r+') as f:
-        f.truncate(0)
+getLogger("pymongo").setLevel(ERROR)
 
-if ospath.exists('rlog.txt'):
-    remove('rlog.txt')
+_LOGGER = getLogger("update")
+_DB_PARTITION_SALT = b"wzmlx_v3_db_partition_salt"
 
-basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[FileHandler('log.txt'), StreamHandler()],
-            level=INFO)
+_VAR_LIST = [
+    "BOT_TOKEN",
+    "TELEGRAM_API",
+    "TELEGRAM_HASH",
+    "OWNER_ID",
+    "DATABASE_URL",
+    "BASE_URL",
+    "UPSTREAM_REPO",
+    "UPSTREAM_BRANCH",
+]
 
-load_dotenv('config.env', override=True)
 
-try:
-    if bool(environ.get('_____REMOVE_THIS_LINE_____')):
-        log_error('The README.md file there to be read! Exiting now!')
-        exit()
-except:
-    pass
+def _get_version():
+    try:
+        return import_module("bot.version").get_version()
+    except Exception:
+        return "unknown"
 
-BOT_TOKEN = environ.get('BOT_TOKEN', '')
-if len(BOT_TOKEN) == 0:
-    log_error("BOT_TOKEN variable is missing! Exiting now")
-    exit(1)
 
-bot_id = BOT_TOKEN.split(':', 1)[0]
+def _setup_logging():
+    if path.exists("log.txt"):
+        with open("log.txt", "w"):
+            pass
+    if path.exists("rlog.txt"):
+        remove("rlog.txt")
+    basicConfig(
+        format="[%(asctime)s] [%(levelname)s] - %(message)s",
+        datefmt="%d-%b-%y %I:%M:%S %p",
+        handlers=[FileHandler("log.txt"), StreamHandler()],
+        level=INFO,
+    )
 
-DATABASE_URL = environ.get('DATABASE_URL', '')
-if len(DATABASE_URL) == 0:
-    DATABASE_URL = None
 
-if DATABASE_URL is not None:
-    conn = MongoClient(DATABASE_URL)
-    db = conn.wzmlx
-    old_config = db.settings.deployConfig.find_one({'_id': bot_id})
-    config_dict = db.settings.config.find_one({'_id': bot_id})
-    if old_config is not None:
-        del old_config['_id']
-    if (old_config is not None and old_config == dict(dotenv_values('config.env')) or old_config is None) \
-            and config_dict is not None:
-        environ['UPSTREAM_REPO'] = config_dict['UPSTREAM_REPO']
-        environ['UPSTREAM_BRANCH'] = config_dict['UPSTREAM_BRANCH']
-    conn.close()
+def _load_config():
+    try:
+        settings = import_module("config")
+        config_file = {
+            key: value.strip() if isinstance(value, str) else value
+            for key, value in vars(settings).items()
+            if not key.startswith("__")
+        }
+    except ModuleNotFoundError:
+        _LOGGER.info("Config.py file is not Added! Checking ENVs..")
+        config_file = {}
+    env_updates = {key: environ[key].strip() for key in _VAR_LIST if key in environ}
+    if env_updates:
+        _LOGGER.info("Config data is updated with ENVs!")
+        config_file.update(env_updates)
+    return config_file
 
-UPSTREAM_REPO = environ.get('UPSTREAM_REPO', '')
-if len(UPSTREAM_REPO) == 0:
-    UPSTREAM_REPO = None
 
-UPSTREAM_BRANCH = environ.get('UPSTREAM_BRANCH', '')
-if len(UPSTREAM_BRANCH) == 0:
-    UPSTREAM_BRANCH = 'master'
+def _db_partition_id(bot_id):
+    raw = sha256(_DB_PARTITION_SALT + str(bot_id).encode()).hexdigest()
+    return f"p_{raw[:24]}"
 
-if UPSTREAM_REPO is not None:
-    if ospath.exists('.git'):
-        srun(["rm", "-rf", ".git"])
 
-    update = srun([f"git init -q \
-                     && git config --global user.email doc.adhikari@gmail.com \
-                     && git config --global user.name weebzone \
-                     && git add . \
-                     && git commit -sm update -q \
-                     && git remote add origin {UPSTREAM_REPO} \
-                     && git fetch origin -q \
-                     && git reset --hard origin/{UPSTREAM_BRANCH} -q"], shell=True)
+async def _fetch_db_config(database_url, db_part, collection="config"):
+    try:
+        from pymongo import AsyncMongoClient
+        from pymongo.server_api import ServerApi
+    except ImportError:
+        scall("uv pip install pymongo", shell=True)
+        from pymongo import AsyncMongoClient
+        from pymongo.server_api import ServerApi
+    conn = AsyncMongoClient(database_url, server_api=ServerApi("1"))
+    try:
+        return await conn.wzmlx.settings[collection].find_one(
+            {"_id": db_part}, {"_id": 0}
+        )
+    except Exception as e:
+        _LOGGER.error(f"Database ERROR: {e}")
+        return None
+    finally:
+        await conn.close()
 
-    if update.returncode == 0:
-        log_info('Successfully updated with latest commit from UPSTREAM_REPO')
+
+def _fetch_config_from_db(config_file, db_part):
+    database_url = config_file.get("DATABASE_URL", "").strip()
+    if not database_url:
+        return
+
+    db_config = run(_fetch_db_config(database_url, db_part))
+    if db_config is None:
+        _LOGGER.warning("No saved config found in MongoDB, using defaults")
+        return
+
+    old_config = run(_fetch_db_config(database_url, db_part, collection="deployConfig"))
+    env_keys = {k: config_file[k] for k in _VAR_LIST if k in environ}
+
+    if old_config is not None and old_config != config_file:
+        merged = dict(config_file)
+        for k, v in db_config.items():
+            if k in old_config and config_file.get(k) is not None:
+                if old_config.get(k) == config_file.get(k):
+                    merged[k] = v
+            elif k not in merged or merged[k] is None:
+                merged[k] = v
+        config_file.clear()
+        config_file.update(merged)
+        _LOGGER.info("Config: config.py changed, takes priority over MongoDB")
     else:
-        log_error(
-            'Something went wrong while updating, check UPSTREAM_REPO if valid or not!')
+        merged = dict(config_file)
+        if db_config:
+            merged.update(db_config)
+        config_file.clear()
+        config_file.update(merged)
+        _LOGGER.info(
+            "Config imported from MongoDB"
+            if old_config is not None
+            else "Config: first deploy, config.py fills gaps from MongoDB"
+        )
+    config_file.update(env_keys)
+
+
+def _run_update(upstream_repo, upstream_branch, version):
+    if not upstream_repo:
+        _LOGGER.info("No UPSTREAM_REPO set, skipping git update")
+        return
+    if path.exists(".git"):
+        srun(["rm", "-rf", ".git"])
+    git_cmds = [
+        ["git", "init", "-q"],
+        [
+            "git",
+            "config",
+            "--global",
+            "user.email",
+            "105407900+SilentDemonSD@users.noreply.github.com",
+        ],
+        ["git", "config", "--global", "user.name", "SilentDemonSD"],
+        ["git", "add", "."],
+        ["git", "commit", "-sm", "update", "-q"],
+        ["git", "remote", "add", "origin", upstream_repo],
+        ["git", "fetch", "origin", "-q"],
+        ["git", "reset", "--hard", f"origin/{upstream_branch}", "-q"],
+    ]
+    for cmd in git_cmds:
+        result = srun(cmd)
+        if result.returncode != 0:
+            break
+    display_repo = "/".join(upstream_repo.split("/")[-2:])
+    if result and result.returncode == 0:
+        _LOGGER.info("Successfully updated with Latest Updates!")
+    else:
+        _LOGGER.error("Something went Wrong! Recheck your details or Ask Support!")
+    _LOGGER.info(
+        f"UPSTREAM_REPO: {display_repo} | UPSTREAM_BRANCH: {upstream_branch} | VERSION: {version}"
+    )
+
+
+def _update_packages():
+    scall("uv pip install -U -r requirements.txt", shell=True)
+    _LOGGER.info("Successfully Updated all the Packages!")
+
+
+def _cleanup():
+    for d in ["gen_scripts", ".github"]:
+        if isdir(d):
+            rmtree(d, ignore_errors=True)
+    for f in ["README.md", "LICENSE", "Dockerfile", "docker-compose.yml"]:
+        if path.exists(f):
+            remove(f)
+
+
+def main():
+    _setup_logging()
+    config_file = _load_config()
+    version = _get_version()
+    bot_token = config_file.get("BOT_TOKEN", "")
+    if not bot_token:
+        _LOGGER.error("BOT_TOKEN variable is missing! Exiting now")
+        exit(1)
+    _fetch_config_from_db(config_file, _db_partition_id(bot_token.split(":", 1)[0]))
+    upstream_repo = config_file.get("UPSTREAM_REPO", "").strip()
+    upstream_branch = config_file.get("UPSTREAM_BRANCH", "").strip() or "wzv3"
+    _run_update(upstream_repo, upstream_branch, version)
+    _cleanup()
+    _update_packages()
+
+
+if __name__ == "__main__":
+    main()
