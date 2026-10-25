@@ -44,7 +44,7 @@ from ...core.config_manager import Config
 from ...core.tg_client import TgClient
 from ..ext_utils.bot_utils import SetInterval, download_image_url, fetch_drive_cat
 from ..ext_utils.exceptions import TgLinkException
-from ..ext_utils.status_utils import get_readable_message
+from ..ext_utils.status_utils import get_readable_message, get_readable_time
 from .button_build import ButtonMaker
 
 

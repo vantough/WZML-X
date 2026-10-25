@@ -137,8 +137,8 @@ def get_poster(query, bulk=False, id=False, file=None):
     plot = None
     for keyword in ["plot", "summaries", "synopses"]:
         plot_data = getattr(movie, keyword, None)
-        if type(plot_data) is list:
-            plot = plot_data[0]
+        if isinstance(plot_data, (list, tuple)):
+            plot = next((item for item in plot_data if item), None)
         else:
             plot = plot_data
         if plot:
@@ -333,8 +333,7 @@ def list_to_hash(k, flagg=False, emoji=False):
                 )
             return str("#" + k[0].replace(" ", "_").replace("-", "_"))
         try:
-            conflag = (conn.get(name=k[0])).flag
-            return str(f"{conflag} #" + k[0].replace(" ", "_").replace("-", "_"))
+            conflag = (conn.get(name=k[0](f"{conflag} #" + k[0].replace(" ", "_").replace("-", "_"))
         except AttributeError:
             return str("#" + k[0].replace(" ", "_").replace("-", "_"))
     elif LIST_ITEMS:
@@ -546,7 +545,9 @@ async def imdb_callback(_, query):
 <details>
 <summary>Keywords</summary>
 <ul>{kw_items}</ul>
-</detonfig.IMDB_TEMPLATE
+</details>"""
+
+        template = Config.IMDB_TEMPLATE
         if template:
             cap = template.format(**{**imdb, **locals()})
             if poster:
